@@ -28,10 +28,12 @@ from backend.routers import auth, uploads, videos
 from backend.routers import content  # Phase 2A: AI content generation
 from backend.routers import tts      # Phase 2B: TTS audio generation
 from backend.routers import video_generation  # Phase 2D: Video generation
+from backend.routers import queue    # Phase 3A: Content queue
 # Import models so SQLAlchemy registers all tables under Base.metadata
 import backend.content_models  # noqa: F401
 import backend.tts_models       # noqa: F401
 import backend.video_generation_models  # noqa: F401
+import backend.queue_models     # noqa: F401
 
 
 # ── Lifespan: create DB tables on startup ─────────────────────────────────────
@@ -39,6 +41,9 @@ import backend.video_generation_models  # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # Phase 3A: start the queue worker on backend startup
+    from backend.services.queue_processor import start_worker
+    start_worker()
     yield
 
 
@@ -70,6 +75,7 @@ app.include_router(videos.router)
 app.include_router(content.router)          # Phase 2A
 app.include_router(tts.router)             # Phase 2B
 app.include_router(video_generation.router)  # Phase 2D
+app.include_router(queue.router)           # Phase 3A
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
