@@ -4,10 +4,11 @@ import { UploadForm } from './components/UploadForm';
 import { UploadProgress } from './components/UploadProgress';
 import { VideoList } from './components/VideoList';
 import { AIContentPage } from './components/AIContentPage';
+import { VideoGenerationPage } from './components/VideoGenerationPage';
 import type { UploadJob } from './types/api';
 import './App.css';
 
-type View = 'upload' | 'progress' | 'history' | 'content';
+type View = 'upload' | 'progress' | 'history' | 'content' | 'video';
 
 export default function App() {
   const [view, setView]           = useState<View>('upload');
@@ -60,6 +61,12 @@ export default function App() {
         >
           🤖 AI Content
         </button>
+        <button
+          className={`nav-tab ${view === 'video' ? 'nav-tab--active' : ''}`}
+          onClick={() => setView('video')}
+        >
+          🎬 Create Video
+        </button>
       </nav>
 
       {/* Main content */}
@@ -79,6 +86,8 @@ export default function App() {
         {view === 'history' && <VideoList />}
 
         {view === 'content' && <AIContentPage />}
+
+        {view === 'video' && <VideoGenerationPage />}
       </main>
 
       <footer className="app-footer">

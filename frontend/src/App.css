@@ -644,3 +644,214 @@ body {
 
 /* Loading dot on voice label */
 .tts-loading-dot { color: var(--color-muted); font-weight: 400; }
+
+/* ── Phase 2D: Video Generation ──────────────────────────────────────────── */
+
+.video-gen-page {
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.video-create-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+}
+
+/* Project info row */
+.video-project-info {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto 1fr;
+  gap: 0.25rem 0.75rem;
+  background: var(--color-surface2);
+  border-radius: var(--radius-sm);
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+  align-items: center;
+}
+
+/* Options checkboxes */
+.video-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+.checkbox-label input[type="checkbox"] {
+  accent-color: var(--color-primary);
+  width: 16px;
+  height: 16px;
+}
+
+/* Progress panel */
+.video-progress-panel {
+  background: var(--color-surface2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  margin-top: 1rem;
+}
+.video-progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+.video-progress-pct {
+  color: var(--color-primary);
+  font-size: 1.1rem;
+}
+.video-progress-bar-outer {
+  width: 100%;
+  height: 10px;
+  background: var(--color-border);
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+.video-progress-bar-inner {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-primary-h));
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+.video-current-step {
+  font-size: 0.8rem;
+  color: var(--color-muted);
+  margin-bottom: 0.75rem;
+}
+
+/* Step checklist */
+.video-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+.video-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--color-muted);
+  transition: color var(--transition);
+}
+.video-step--done  { color: var(--color-success); }
+.video-step--active { color: var(--color-text); font-weight: 600; }
+.video-step__icon {
+  width: 18px;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+/* Result */
+.video-result {
+  margin-top: 1.25rem;
+  background: var(--color-surface2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1.25rem;
+}
+.video-result__header {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--color-success);
+  margin-bottom: 0.75rem;
+}
+.video-result__thumb {
+  margin-bottom: 0.75rem;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  max-width: 480px;
+}
+.video-thumbnail-img {
+  width: 100%;
+  height: auto;
+  display: block;
+  border-radius: var(--radius-sm);
+}
+.video-result__meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+.video-player-wrap {
+  margin-bottom: 0.75rem;
+}
+.video-player {
+  background: #000;
+}
+
+/* History */
+.video-history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.video-history-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  transition: border-color var(--transition);
+}
+.video-history-card--completed { border-color: #1a3a1a; }
+.video-history-card--failed    { border-color: #3a1a1a; }
+.video-history-card__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+.video-history-card__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.video-history-card__stats {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.82rem;
+  color: var(--color-muted);
+}
+.video-history-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-block;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.status-badge--completed  { background: #1a3a1a; color: var(--color-success); }
+.status-badge--failed     { background: #3a1a1a; color: var(--color-error); }
+.status-badge--queued,
+.status-badge--preparing,
+.status-badge--generating_audio,
+.status-badge--preparing_visuals,
+.status-badge--generating_captions,
+.status-badge--assembling,
+.status-badge--generating_thumbnail {
+  background: #1a1a3a;
+  color: var(--color-info);
+}
+.status-badge--cancelled { background: var(--color-surface2); color: var(--color-muted); }

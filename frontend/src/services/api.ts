@@ -10,6 +10,8 @@ import type {
   TTSGenerateFromContentRequest,
   TTSVoice,
   UploadJob,
+  VideoGenerationRequest,
+  VideoJob,
   VideoUpdateRequest,
   VideoUpdateResponse,
 } from '../types/api';
@@ -200,4 +202,45 @@ export async function deleteAudioRecord(audioId: string): Promise<void> {
 
 export function getAudioStreamUrl(audioId: string): string {
   return `${BASE_URL}/api/tts/${audioId}/audio`;
+}
+
+// ── Phase 2D: Video Generation ───────────────────────────────────────────────
+
+export async function createVideoJob(
+  projectId: string,
+  data: VideoGenerationRequest,
+): Promise<VideoJob> {
+  const res = await fetch(`${BASE_URL}/api/video-generation/from-content/${projectId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<VideoJob>(res);
+}
+
+export async function getVideoJob(jobId: string): Promise<VideoJob> {
+  const res = await fetch(`${BASE_URL}/api/video-generation/${jobId}`);
+  return handleResponse<VideoJob>(res);
+}
+
+export async function listVideoJobs(): Promise<VideoJob[]> {
+  const res = await fetch(`${BASE_URL}/api/video-generation`);
+  return handleResponse<VideoJob[]>(res);
+}
+
+export async function deleteVideoJob(jobId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/video-generation/${jobId}`, { method: 'DELETE' });
+  return handleResponse<void>(res);
+}
+
+export function getVideoStreamUrl(jobId: string): string {
+  return `${BASE_URL}/api/video-generation/${jobId}/video`;
+}
+
+export function getVideoThumbnailUrl(jobId: string): string {
+  return `${BASE_URL}/api/video-generation/${jobId}/thumbnail`;
+}
+
+export function getVideoCaptionUrl(jobId: string): string {
+  return `${BASE_URL}/api/video-generation/${jobId}/captions`;
 }

@@ -129,7 +129,7 @@ export interface ResearchRequest {
   depth: 'quick' | 'standard' | 'deep';
 }
 
-// ── Phase 2B: TTS Audio Generation ──────────────────────────────────────────
+// ── Phase 2B/2C: TTS Audio Generation ───────────────────────────────────────
 
 export type AudioStatus = 'pending' | 'generating' | 'completed' | 'failed';
 
@@ -138,6 +138,7 @@ export interface TTSVoice {
   locale: string;
   language: string;
   gender: string;
+  provider: string;   // "edge" | "local"
 }
 
 export interface AudioRecord {
@@ -160,10 +161,48 @@ export interface TTSGenerateFromContentRequest {
   voice?: string;
 }
 
-export interface TTSVoice {
-  name: string;
-  locale: string;
-  language: string;
-  gender: string;
-  provider: string;   // "edge" | "local"
+// ── Phase 2D: Video Generation ───────────────────────────────────────────────
+
+export type VideoJobStatus =
+  | 'queued'
+  | 'preparing'
+  | 'generating_audio'
+  | 'preparing_visuals'
+  | 'generating_captions'
+  | 'assembling'
+  | 'generating_thumbnail'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export interface VideoGenerationRequest {
+  audio_id?: string;
+  width?: number;
+  height?: number;
+  fps?: number;
+  captions_enabled?: boolean;
+  music_enabled?: boolean;
+}
+
+export interface VideoJob {
+  id: string;
+  content_project_id: string;
+  audio_id: string | null;
+  status: VideoJobStatus;
+  progress: number;
+  current_step: string | null;
+  duration_seconds: number | null;
+  width: number;
+  height: number;
+  fps: number;
+  file_size_bytes: number | null;
+  captions_enabled: boolean;
+  music_enabled: boolean;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  completed_at: string | null;
+  video_url: string | null;
+  thumbnail_url: string | null;
+  caption_url: string | null;
 }
