@@ -1,0 +1,34 @@
+# Google / YouTube API
+google-auth==2.29.0
+google-auth-oauthlib==1.2.0
+google-auth-httplib2==0.2.0
+google-api-python-client==2.127.0
+
+# CLI utilities
+python-dotenv==1.0.1
+tqdm==4.66.4
+
+# FastAPI backend
+fastapi==0.115.6
+uvicorn==0.34.0
+python-multipart==0.0.20
+
+# Database
+sqlalchemy==2.0.36
+
+# HTTP client (used by Groq provider and web research)
+httpx==0.28.1
+
+# Web search for research (no API key required)
+duckduckgo-search==7.5.3
+
+# Text-to-Speech (no API key required, requires internet)
+# Note: Microsoft may rate-limit the synthesis WSS endpoint per IP.
+# If you see 403 errors, wait a few minutes and retry.
+edge-tts==6.1.12
+
+# Local CPU TTS fallback (Windows SAPI, no internet, no model download)
+pyttsx3
+
+# Testing
+pytest==8.3.4

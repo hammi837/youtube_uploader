@@ -1,0 +1,73 @@
+# ── Google OAuth secrets — NEVER commit these ────────────────────────────────
+credentials.json
+token.json
+
+# ── Environment variables ─────────────────────────────────────────────────────
+.env
+backend/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.production
+
+# ── Database ──────────────────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── Upload temp files ─────────────────────────────────────────────────────────
+upload_tmp/
+
+# ── Generated audio files (TTS output) ───────────────────────────────────────
+data/audio/
+*.mp3
+
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+backend/env/
+
+# ── Database backup files ─────────────────────────────────────────────────────
+*.bak
+*.bak_*
+
+# ── Frontend build output ─────────────────────────────────────────────────────
+frontend/dist/
+frontend/node_modules/
+
+# ── FFmpeg binaries — large executables, install locally, do not commit ──────
+# Install location: G:\youtube-uploader\tools\ffmpeg\bin\
+# See README.md § FFmpeg for setup instructions.
+tools/ffmpeg/bin/
+tools/ffmpeg/
+tools/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.code-workspace
+
+# ── Test artifacts ────────────────────────────────────────────────────────────
+.coverage
+htmlcov/
+
+# ── Local scratch / one-off scripts ──────────────────────────────────────────
+test_2c_real.py
