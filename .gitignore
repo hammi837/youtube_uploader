@@ -21,6 +21,23 @@ upload_tmp/
 data/audio/
 *.mp3
 
+# ── Phase 2D: All generated media output and downloaded models ───────────────
+# Generated videos, thumbnails, captions
+data/videos/
+data/thumbnails/
+data/captions/
+# Temporary per-job working files
+data/temp/
+# Downloaded AI models (Whisper, etc.) — can be re-downloaded, never commit
+data/models/
+# User-provided local assets (images, music) — machine-specific
+data/assets/
+# HuggingFace / pip cache tags
+CACHEDIR.TAG
+*.tag
+# Any other generated data
+data/
+
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
