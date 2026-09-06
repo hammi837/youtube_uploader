@@ -206,3 +206,82 @@ export interface VideoJob {
   thumbnail_url: string | null;
   caption_url: string | null;
 }
+
+// ── Phase 3A: Content Queue ──────────────────────────────────────────────────
+
+export type QueueJobStatus =
+  | 'queued'
+  | 'researching'
+  | 'generating_script'
+  | 'generating_audio'
+  | 'generating_video'
+  | 'uploading'
+  | 'scheduled'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused';
+
+export interface QueueJob {
+  id: string;
+  topic: string;
+  language: string;
+  tone: string;
+  target_duration_seconds: number;
+  scene_count: number;
+  status: QueueJobStatus;
+  current_stage: string | null;
+  progress: number;
+  priority: number;
+  retry_count: number;
+  max_retries: number;
+  scheduled_publish_at: string | null;
+  youtube_privacy_status: string;
+  youtube_category_id: string;
+  content_project_id: string | null;
+  video_job_id: string | null;
+  youtube_video_id: string | null;
+  youtube_url: string | null;
+  video_uploaded: boolean;
+  thumbnail_uploaded: boolean;
+  schedule_set: boolean;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface BulkQueueRequest {
+  topics: string[];
+  language?: string;
+  tone?: string;
+  target_duration_seconds?: number;
+  scene_count?: number;
+  priority?: number;
+  max_retries?: number;
+  schedule_start?: string;
+  schedule_interval_minutes?: number;
+  schedule_timezone?: string;
+  youtube_privacy_status?: string;
+  youtube_category_id?: string;
+}
+
+export interface BulkQueueResponse {
+  created: number;
+  jobs: QueueJob[];
+  schedule_summary: string[];
+}
+
+export interface QueueStatusSummary {
+  queue_running: boolean;
+  queue_paused: boolean;
+  current_job_id: string | null;
+  total: number;
+  queued: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  paused: number;
+}

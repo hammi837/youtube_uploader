@@ -363,6 +363,157 @@ If `tools/ffmpeg/bin/` is missing (e.g. after a fresh clone):
 
 ---
 
+## Phase 3A — Bulk Content Queue + Automatic YouTube Scheduling
+
+### Architecture overview
+
+```
+User pastes N topics
+        ↓
+POST /api/queue  →  N ContentQueueJob records (status=queued)
+        ↓
+Queue worker thread (1 active job at a time — i5-6300U constraint)
+        ↓
+  Job 1: Research → Script → TTS → Video → Thumbnail → YouTube → Schedule
+  Job 2: waits until Job 1 completes
+  Job 3: waits until Job 2 completes
+```
+
+**Why sequential?** The i5-6300U has only 2 cores / 4 threads.
+Parallel video-generation pipelines would overload the CPU and RAM.
+One video at a time keeps the laptop stable and responsive.
+
+### Queue workflow
+
+1. User enters topics in the **📦 Queue** tab (one per line)
+2. Configures language, tone, duration, YouTube privacy, and optional schedule
+3. Clicks **Add topics to queue**
+4. The queue worker auto-starts and processes jobs one by one:
+   - Research (DuckDuckGo)
+   - Script generation (Groq LLM)
+   - TTS narration (Edge-TTS → local Windows SAPI fallback)
+   - Video generation (FFmpeg, 1920×1080, H.264/AAC)
+   - Thumbnail (Pillow)
+   - YouTube upload + thumbnail upload
+   - Schedule if requested
+
+### Queue API endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/queue` | Bulk create jobs from topic list |
+| `GET` | `/api/queue` | List jobs (filter by `?status=queued`) |
+| `GET` | `/api/queue/status` | Worker state + job counts |
+| `GET` | `/api/queue/{id}` | Single job detail |
+| `POST` | `/api/queue/{id}/cancel` | Cancel queued job |
+| `POST` | `/api/queue/{id}/retry` | Retry failed/cancelled job |
+| `POST` | `/api/queue/pause` | Pause (current job finishes) |
+| `POST` | `/api/queue/resume` | Resume processing |
+| `POST` | `/api/queue/start` | Explicitly start the worker |
+| `DELETE` | `/api/queue/{id}` | Delete terminal job record |
+
+### Scheduling behavior
+
+If `schedule_start` is provided, videos are published sequentially:
+
+```
+POST /api/queue
+{
+  "topics": ["Why do cats purr?", "How do black holes work?"],
+  "schedule_start": "2026-09-07T09:00:00+05:00",
+  "schedule_interval_minutes": 240
+}
+```
+
+Produces:
+- Video 1 → published 2026-09-07 04:00 UTC (09:00 PKT)
+- Video 2 → published 2026-09-07 08:00 UTC (13:00 PKT)
+
+- Times use the existing DST-safe scheduler (`services/scheduler.py`)
+- All times stored as UTC in the database
+- YouTube requires `privacyStatus=private` for scheduled videos
+
+### Retry / recovery behavior
+
+**Automatic retry:** Transient errors (timeouts, 429, network failures) retry
+up to `max_retries` (default 3) with exponential backoff (2s → 4s → 8s).
+
+**Permanent errors** (invalid topic, file not found, validation failures)
+fail immediately without retrying.
+
+**Manual retry:** Any `failed` or `cancelled` job can be retried via:
+- `POST /api/queue/{id}/retry` (API)
+- ↺ Retry button in the frontend
+
+**Startup recovery:** On backend restart, any job left in an active state
+(e.g. server crashed mid-pipeline) is automatically handled:
+- If `youtube_video_id` is set → marked `completed` (upload succeeded)
+- If retries remain → requeued for retry
+- If no retries remain → marked `failed`
+
+### Duplicate upload protection
+
+Once `youtube_video_id` is stored on a queue job, the upload stage will
+never call YouTube's upload API for that job again — even if the job is
+retried, the server restarts, or the API is called multiple times.
+
+### Pause / resume behavior
+
+- `pause` stops the worker from claiming new jobs after the current one finishes
+- The currently processing job always runs to completion
+- FFmpeg/TTS are never killed mid-process
+- `resume` restarts the polling loop
+
+### Database model
+
+Table: `content_queue_jobs`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | UUID | Primary key |
+| `topic` | TEXT | User-provided topic |
+| `status` | TEXT | queued/researching/…/completed/failed |
+| `current_stage` | TEXT | Human-readable current step |
+| `progress` | INT | 0–100 |
+| `retry_count` | INT | Auto-incremented on transient failure |
+| `max_retries` | INT | Default 3 |
+| `scheduled_publish_at` | DATETIME | UTC, nullable |
+| `content_project_id` | FK | Links to content_projects |
+| `video_job_id` | FK | Links to video_generation_jobs |
+| `youtube_video_id` | TEXT | Set after successful upload |
+| `youtube_url` | TEXT | Full watch URL |
+| `video_uploaded` | BOOL | Upload step flag |
+| `thumbnail_uploaded` | BOOL | Thumbnail step flag |
+| `schedule_set` | BOOL | Schedule step flag |
+
+### $0 cost
+
+Every component is free:
+- Research: DuckDuckGo (no API key)
+- LLM: Groq free tier
+- TTS: Edge-TTS (free) → Windows SAPI fallback (built-in)
+- Video: FFmpeg (open source, local)
+- Captions: Whisper tiny (open source, local CPU)
+- YouTube: YouTube Data API v3 (free quota)
+
+No NVIDIA GPU, no CUDA, no paid services.
+
+### Known limitations
+
+1. **Sequential only.** One video at a time. On i5-6300U, a 3-minute video
+   takes ~5–7 minutes to generate. 10 videos/day ≈ ~1–2 hours total.
+2. **Groq free tier:** ~14,400 tokens/minute. If you queue many jobs rapidly,
+   the LLM stage may hit rate limits and retry automatically.
+3. **YouTube quota:** 10,000 units/day. One upload ≈ 1,600 units (~6/day).
+   Plan your queue size accordingly.
+4. **Whisper model:** Downloads ~75 MB on first caption run (to `data/models/whisper/`).
+5. **YouTube upload mid-crash:** If the server crashes after YouTube accepts
+   the upload but before `youtube_video_id` is saved, the job will retry.
+   The video may exist on YouTube without a stored ID. Check your YouTube
+   Studio if this occurs.
+
+---
+
 ## Running tests
 
 ```bash

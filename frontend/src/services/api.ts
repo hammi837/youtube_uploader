@@ -1,9 +1,13 @@
 import type {
   AudioRecord,
   AuthStatus,
+  BulkQueueRequest,
+  BulkQueueResponse,
   ContentProjectDetail,
   ContentProjectSummary,
   HealthResponse,
+  QueueJob,
+  QueueStatusSummary,
   ResearchRequest,
   ResearchResponse,
   ScriptRequest,
@@ -243,4 +247,63 @@ export function getVideoThumbnailUrl(jobId: string): string {
 
 export function getVideoCaptionUrl(jobId: string): string {
   return `${BASE_URL}/api/video-generation/${jobId}/captions`;
+}
+
+// ── Phase 3A: Content Queue ───────────────────────────────────────────────────
+
+export async function createQueueJobs(data: BulkQueueRequest): Promise<BulkQueueResponse> {
+  const res = await fetch(`${BASE_URL}/api/queue`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<BulkQueueResponse>(res);
+}
+
+export async function listQueueJobs(statusFilter?: string): Promise<QueueJob[]> {
+  const url = statusFilter
+    ? `${BASE_URL}/api/queue?status=${encodeURIComponent(statusFilter)}`
+    : `${BASE_URL}/api/queue`;
+  const res = await fetch(url);
+  return handleResponse<QueueJob[]>(res);
+}
+
+export async function getQueueJob(jobId: string): Promise<QueueJob> {
+  const res = await fetch(`${BASE_URL}/api/queue/${jobId}`);
+  return handleResponse<QueueJob>(res);
+}
+
+export async function getQueueStatus(): Promise<QueueStatusSummary> {
+  const res = await fetch(`${BASE_URL}/api/queue/status`);
+  return handleResponse<QueueStatusSummary>(res);
+}
+
+export async function cancelQueueJob(jobId: string): Promise<QueueJob> {
+  const res = await fetch(`${BASE_URL}/api/queue/${jobId}/cancel`, { method: 'POST' });
+  return handleResponse<QueueJob>(res);
+}
+
+export async function retryQueueJob(jobId: string): Promise<QueueJob> {
+  const res = await fetch(`${BASE_URL}/api/queue/${jobId}/retry`, { method: 'POST' });
+  return handleResponse<QueueJob>(res);
+}
+
+export async function deleteQueueJob(jobId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/queue/${jobId}`, { method: 'DELETE' });
+  return handleResponse<void>(res);
+}
+
+export async function pauseQueue(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/queue/pause`, { method: 'POST' });
+  return handleResponse<void>(res);
+}
+
+export async function resumeQueue(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/queue/resume`, { method: 'POST' });
+  return handleResponse<void>(res);
+}
+
+export async function startQueue(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/queue/start`, { method: 'POST' });
+  return handleResponse<void>(res);
 }
