@@ -30,5 +30,11 @@ edge-tts==6.1.12
 # Local CPU TTS fallback (Windows SAPI, no internet, no model download)
 pyttsx3
 
+# Phase 2D: Video generation
+# Image/thumbnail generation (no AI — pure Pillow)
+Pillow==12.3.0
+# CPU-only speech transcription for captions (tiny model, ~75 MB)
+faster-whisper==1.1.1
+
 # Testing
 pytest==8.3.4

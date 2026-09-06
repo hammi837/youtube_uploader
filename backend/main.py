@@ -27,9 +27,11 @@ from backend.db import Base, engine
 from backend.routers import auth, uploads, videos
 from backend.routers import content  # Phase 2A: AI content generation
 from backend.routers import tts      # Phase 2B: TTS audio generation
+from backend.routers import video_generation  # Phase 2D: Video generation
 # Import models so SQLAlchemy registers all tables under Base.metadata
 import backend.content_models  # noqa: F401
 import backend.tts_models       # noqa: F401
+import backend.video_generation_models  # noqa: F401
 
 
 # ── Lifespan: create DB tables on startup ─────────────────────────────────────
@@ -65,8 +67,9 @@ app.add_middleware(
 app.include_router(auth.router)
 app.include_router(uploads.router)
 app.include_router(videos.router)
-app.include_router(content.router)   # Phase 2A
-app.include_router(tts.router)       # Phase 2B
+app.include_router(content.router)          # Phase 2A
+app.include_router(tts.router)             # Phase 2B
+app.include_router(video_generation.router)  # Phase 2D
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
