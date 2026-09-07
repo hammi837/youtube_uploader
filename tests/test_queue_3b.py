@@ -832,3 +832,167 @@ class TestTTSAudioCleanup:
 
         # Active job's audio must still exist
         assert active_audio_file.exists()
+
+
+# ── Research error classification fixes ──────────────────────────────────────
+
+class TestResearchErrorClassification:
+    """Verify that research errors are correctly classified as transient vs permanent."""
+
+    def test_research_rate_limit_error_is_transient(self):
+        """ResearchRateLimitError must be transient — DDG rate limits are temporary."""
+        from backend.services.queue_processor import _is_transient
+        from backend.services.research.base import ResearchRateLimitError
+        exc = ResearchRateLimitError("DuckDuckGo rate-limited the search request.")
+        assert _is_transient(exc) is True
+
+    def test_research_network_error_is_transient(self):
+        """ResearchNetworkError must be transient — network failures recover."""
+        from backend.services.queue_processor import _is_transient
+        from backend.services.research.base import ResearchNetworkError
+        exc = ResearchNetworkError("Network error during DuckDuckGo search.")
+        assert _is_transient(exc) is True
+
+    def test_research_no_sources_error_is_not_transient(self):
+        """ResearchNoSourcesError must NOT be transient — retrying won't find sources."""
+        from backend.services.queue_processor import _is_transient
+        from backend.services.research.base import ResearchNoSourcesError
+        exc = ResearchNoSourcesError("No reliable web sources were found.")
+        assert _is_transient(exc) is False
+
+    def test_research_empty_topic_is_not_transient(self):
+        """ResearchEmptyTopicError must NOT be transient — bad input won't fix itself."""
+        from backend.services.queue_processor import _is_transient
+        from backend.services.research.base import ResearchEmptyTopicError
+        exc = ResearchEmptyTopicError("Topic cannot be empty.")
+        assert _is_transient(exc) is False
+
+    def test_rate_limit_keyword_variations(self):
+        """All DDG rate-limit message variants must be detected as transient."""
+        from backend.services.queue_processor import _is_transient
+        # hyphenated form
+        assert _is_transient(Exception("DuckDuckGo rate-limited the request")) is True
+        # space form
+        assert _is_transient(Exception("rate limit exceeded")) is True
+        # no-space form
+        assert _is_transient(Exception("ratelimit exceeded")) is True
+        # 429 code
+        assert _is_transient(Exception("HTTP 429 too many requests")) is True
+
+    def test_no_sources_error_fails_job_without_retrying(self, db):
+        """ResearchNoSourcesError in _retry_call must NOT retry — raise immediately."""
+        from backend.services.queue_processor import _retry_call
+        from backend.services.research.base import ResearchNoSourcesError
+        from tests.conftest import SharedTestingSessionLocal
+
+        job = _make_job(db)
+        call_count = 0
+
+        def always_no_sources():
+            nonlocal call_count
+            call_count += 1
+            raise ResearchNoSourcesError("No sources found for this topic.")
+
+        with patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            with pytest.raises(ResearchNoSourcesError):
+                _retry_call(always_no_sources, job.id, "research+script", max_retries=3)
+
+        # Must have been called exactly once — no retries for permanent errors
+        assert call_count == 1
+
+    def test_rate_limit_error_does_retry(self, db):
+        """ResearchRateLimitError must retry up to max_retries times."""
+        from backend.services.queue_processor import _retry_call
+        from backend.services.research.base import ResearchRateLimitError
+        from tests.conftest import SharedTestingSessionLocal
+
+        job = _make_job(db)
+        call_count = 0
+
+        def always_rate_limited():
+            nonlocal call_count
+            call_count += 1
+            raise ResearchRateLimitError("DuckDuckGo rate-limited")
+
+        with patch("backend.db.SessionLocal", SharedTestingSessionLocal), \
+             patch("backend.services.queue_services.get_retry_delay", return_value=0), \
+             patch("time.sleep"):  # don't actually sleep in tests
+            with pytest.raises(ResearchRateLimitError):
+                _retry_call(always_rate_limited, job.id, "research", max_retries=2)
+
+        # Should have attempted 1 + 2 retries = 3 total calls
+        assert call_count == 3
+
+    def test_rate_limit_enforces_minimum_30s_delay(self, db):
+        """ResearchRateLimitError must use at least 30s delay regardless of env config."""
+        from backend.services.queue_processor import _retry_call
+        from backend.services.research.base import ResearchRateLimitError
+        from tests.conftest import SharedTestingSessionLocal
+
+        job = _make_job(db)
+        delays_used = []
+
+        def rate_limited_then_ok():
+            if len(delays_used) == 0:
+                raise ResearchRateLimitError("rate-limited")
+            return "ok"
+
+        real_sleep = __import__('time').sleep
+
+        def capture_sleep(secs):
+            delays_used.append(secs)
+
+        with patch("backend.db.SessionLocal", SharedTestingSessionLocal), \
+             patch("backend.services.queue_services.get_retry_delay", return_value=5), \
+             patch("time.sleep", side_effect=capture_sleep):
+            result = _retry_call(rate_limited_then_ok, job.id, "research", max_retries=2)
+
+        assert result == "ok"
+        # The delay must be at least 30s for rate limit errors
+        assert delays_used[0] >= 30
+
+
+# ── Topic sanitisation ────────────────────────────────────────────────────────
+
+class TestTopicSanitisation:
+    """_sanitise_topic must strip quotes that break DDG searches."""
+
+    def test_double_quoted_topic_unquoted(self):
+        from backend.services.queue_processor import _sanitise_topic
+        assert _sanitise_topic('"AI Automation That Saves 10 Hours/Week"') \
+               == "AI Automation That Saves 10 Hours/Week"
+
+    def test_single_quoted_topic_unquoted(self):
+        from backend.services.queue_processor import _sanitise_topic
+        assert _sanitise_topic("'Why do cats purr?'") == "Why do cats purr?"
+
+    def test_smart_quotes_unquoted(self):
+        from backend.services.queue_processor import _sanitise_topic
+        assert _sanitise_topic('\u201cHow do black holes work?\u201d') \
+               == "How do black holes work?"
+
+    def test_normal_topic_unchanged(self):
+        from backend.services.queue_processor import _sanitise_topic
+        assert _sanitise_topic("Why is the sky blue?") == "Why is the sky blue?"
+
+    def test_whitespace_stripped(self):
+        from backend.services.queue_processor import _sanitise_topic
+        assert _sanitise_topic("  Why do dogs dream?  ") == "Why do dogs dream?"
+
+    def test_empty_string_safe(self):
+        from backend.services.queue_processor import _sanitise_topic
+        # Should not raise; returns the stripped original
+        result = _sanitise_topic("  ")
+        assert isinstance(result, str)
+
+    def test_partial_quotes_stripped(self):
+        from backend.services.queue_processor import _sanitise_topic
+        # Lone leading quote stripped
+        assert _sanitise_topic('"The AI Tools Nobody is Talking About Yet"') \
+               == "The AI Tools Nobody is Talking About Yet"
+
+    def test_inner_quotes_preserved(self):
+        from backend.services.queue_processor import _sanitise_topic
+        # Quotes inside the topic should NOT be removed
+        result = _sanitise_topic('How to use "ChatGPT" effectively')
+        assert "ChatGPT" in result

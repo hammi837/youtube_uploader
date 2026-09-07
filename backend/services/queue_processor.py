@@ -120,6 +120,10 @@ def _worker_loop() -> None:
             continue
 
         _process_job(job_id)
+        # DDG rate-limit protection: pause 15s between consecutive jobs
+        # so the search provider doesn't see rapid sequential requests.
+        if not _stop_event.is_set():
+            time.sleep(15)
 
     logger.info("Queue worker loop exited.")
 
@@ -300,7 +304,7 @@ def _stage_research_and_script(job_id: str) -> str:
                 return job.content_project_id
 
         request = ScriptRequest(
-            topic=job.topic,
+            topic=_sanitise_topic(job.topic),
             language=job.language,
             tone=job.tone,
             target_duration_seconds=job.target_duration_seconds,
@@ -680,12 +684,24 @@ def _stage_youtube(job_id: str, video_job_id: str) -> None:
 # ── Retry helper ──────────────────────────────────────────────────────────────
 
 _TRANSIENT_KEYWORDS = (
-    "timeout", "rate limit", "429", "503", "502", "connection",
-    "network", "refused", "ssl", "ttl", "temporary",
+    "timeout", "rate limit", "rate-limit", "ratelimit", "429", "503", "502",
+    "connection", "network", "refused", "ssl", "ttl", "temporary",
+    "duckduckgo rate", "too many requests",
 )
+
+# Exception types that are always transient regardless of message content
+_TRANSIENT_EXCEPTION_TYPES: tuple = ()  # populated after import below
 
 
 def _is_transient(exc: Exception) -> bool:
+    """
+    Return True if the exception represents a temporary/retriable error.
+    Checks both the exception message and the exception type.
+    """
+    from backend.services.research.base import ResearchRateLimitError, ResearchNetworkError
+    # Rate-limit and network errors are always transient by type
+    if isinstance(exc, (ResearchRateLimitError, ResearchNetworkError)):
+        return True
     msg = str(exc).lower()
     return any(k in msg for k in _TRANSIENT_KEYWORDS)
 
@@ -699,16 +715,31 @@ def _retry_call(
 ) -> object:
     """
     Call fn() with bounded configurable-delay retry on transient errors.
-    Permanent errors raise immediately.
-    Phase 3B: uses QUEUE_RETRY_DELAY_N env vars instead of 2^n.
+    Permanent errors raise immediately without retry.
+    Phase 3B: uses QUEUE_RETRY_DELAY_N env vars.
+
+    Research-specific behaviour:
+      - ResearchRateLimitError → always transient (DDG rate limit, wait and retry)
+      - ResearchNetworkError   → always transient
+      - ResearchNoSourcesError → permanent (topic found nothing; retrying won't help)
     """
     from backend.services.queue_services import log_job, get_retry_delay
+    from backend.services.research.base import ResearchNoSourcesError, ResearchEmptyTopicError
+
+    # These are never retriable — fail immediately with a clear message
+    _permanent_by_type = (ResearchNoSourcesError, ResearchEmptyTopicError) + permanent_exceptions
 
     last_exc = None
     for attempt in range(1, max_retries + 2):  # max_retries + 1 attempts total
         try:
             return fn()
-        except permanent_exceptions as exc:
+        except _permanent_by_type as exc:
+            # Permanent failure — log clearly and re-raise immediately
+            log_job(
+                job_id,
+                f"[{stage_name}] Permanent failure (will not retry): {str(exc)[:200]}",
+                level="error", stage=stage_name,
+            )
             raise exc
         except Exception as exc:
             last_exc = exc
@@ -717,13 +748,22 @@ def _retry_call(
                     "[%s] Non-transient error on attempt %d: %s",
                     stage_name, attempt, str(exc)[:120],
                 )
+                log_job(
+                    job_id,
+                    f"[{stage_name}] Non-transient error: {str(exc)[:200]}",
+                    level="error", stage=stage_name,
+                )
                 raise exc
             if attempt > max_retries:
                 break
             delay = get_retry_delay(attempt)
+            # For research/DDG rate limits, enforce a minimum 30s delay
+            from backend.services.research.base import ResearchRateLimitError
+            if isinstance(exc, ResearchRateLimitError):
+                delay = max(delay, 30)
             msg = (
                 f"[{stage_name}] Transient error attempt {attempt}/{max_retries}: "
-                f"{str(exc)[:80]}. Retrying in {delay}s."
+                f"{type(exc).__name__}: {str(exc)[:80]}. Retrying in {delay}s."
             )
             logger.warning(msg)
             log_job(job_id, msg, level="warning", stage=stage_name)
@@ -799,6 +839,35 @@ def _mark_failed(job_id: str, message: str) -> None:
         logger.error("_mark_failed failed: %s", exc)
     finally:
         db.close()
+
+
+# ── Topic sanitisation ────────────────────────────────────────────────────────
+
+def _sanitise_topic(topic: str) -> str:
+    """
+    Clean a user-supplied topic before passing it to the research provider.
+
+    Removes:
+    - Surrounding quote characters (single/double/smart quotes) that prevent
+      DDG from finding results. E.g. '"Why cats purr"' → 'Why cats purr'
+    - Leading/trailing whitespace
+    - Excessive punctuation that confuses search queries
+
+    Does NOT truncate — ScriptRequest already validates max length.
+    """
+    import re as _re
+    t = topic.strip()
+    # Remove surrounding matching quotes: "...", '...', "...", '...'
+    for open_q, close_q in [('"', '"'), ("'", "'"), ('\u201c', '\u201d'), ('\u2018', '\u2019')]:
+        if t.startswith(open_q) and t.endswith(close_q) and len(t) > 2:
+            t = t[1:-1].strip()
+    # Remove any remaining lone leading/trailing quote chars
+    t = t.strip('"\'')
+    # Collapse multiple spaces
+    t = _re.sub(r'\s+', ' ', t).strip()
+    if t != topic.strip():
+        logger.info("Topic sanitised: %r → %r", topic.strip(), t)
+    return t or topic.strip()  # fall back to original if sanitisation empties it
 
 
 # ── Startup recovery ──────────────────────────────────────────────────────────
