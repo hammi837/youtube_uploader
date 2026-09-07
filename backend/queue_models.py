@@ -139,7 +139,8 @@ class ContentQueueJob(Base):
     schedule_set: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
 
     # ── Error tracking ─────────────────────────────────────────────────────
-    error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
+    last_error_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     # ── Timestamps ────────────────────────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
@@ -155,6 +156,18 @@ class ContentQueueJob(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )
+    failed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    cancelled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    # ── Disk tracking ──────────────────────────────────────────────────────
+    disk_usage_bytes: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     # ── ORM relationships ──────────────────────────────────────────────────
     content_project: Mapped[Optional["backend.content_models.ContentProject"]] = (  # type: ignore
@@ -208,6 +221,16 @@ class BulkQueueRequest(BaseModel):
             raise ValueError("At least one non-empty topic is required.")
         if len(cleaned) > 50:
             raise ValueError("Maximum 50 topics per request.")
+        # Detect duplicates within the submitted list (normalised lowercase)
+        seen: set[str] = set()
+        for t in cleaned:
+            norm = t.lower()
+            if norm in seen:
+                raise ValueError(
+                    f"Duplicate topic in request: '{t}'. "
+                    "Remove duplicates before submitting."
+                )
+            seen.add(norm)
         return cleaned
 
     @field_validator("youtube_privacy_status")
@@ -243,10 +266,15 @@ class QueueJobResponse(BaseModel):
     thumbnail_uploaded: bool
     schedule_set: bool
     error_message: Optional[str]
+    last_error_type: Optional[str]
+    disk_usage_bytes: Optional[int]
     created_at: datetime
     updated_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    failed_at: Optional[datetime]
+    cancelled_at: Optional[datetime]
+    next_retry_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
 
@@ -263,6 +291,12 @@ class QueueStatusResponse(BaseModel):
     failed: int
     cancelled: int
     paused: int
+    # Phase 3B additions
+    uploads_today: int = 0
+    upload_limit: int = 5
+    uploads_remaining: int = 5
+    free_disk_gb: float = 0.0
+    disk_warning: bool = False
 
 
 class BulkQueueResponse(BaseModel):
@@ -300,8 +334,97 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         thumbnail_uploaded=job.thumbnail_uploaded,
         schedule_set=job.schedule_set,
         error_message=job.error_message,
+        last_error_type=getattr(job, "last_error_type", None),
+        disk_usage_bytes=getattr(job, "disk_usage_bytes", None),
         created_at=job.created_at or now,
         updated_at=job.updated_at or now,
         started_at=job.started_at,
         completed_at=job.completed_at,
+        failed_at=getattr(job, "failed_at", None),
+        cancelled_at=getattr(job, "cancelled_at", None),
+        next_retry_at=getattr(job, "next_retry_at", None),
     )
+
+
+# ── Phase 3B: Job log model ───────────────────────────────────────────────────
+
+class QueueJobLog(Base):
+    """Per-job log entries for Phase 3B diagnostics."""
+    __tablename__ = "queue_job_logs"
+
+    id: Mapped[str] = mapped_column(
+        String(36), primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+    job_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("content_queue_jobs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    level: Mapped[str]           = mapped_column(String(10), nullable=False, default="info")
+    stage: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    message: Mapped[str]         = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
+# ── Phase 3B: Daily YouTube upload tracker ────────────────────────────────────
+
+class YouTubeDailyUpload(Base):
+    """One row per calendar date (UTC) tracking upload count."""
+    __tablename__ = "youtube_daily_uploads"
+
+    date: Mapped[str]      = mapped_column(String(10), primary_key=True)  # YYYY-MM-DD
+    count: Mapped[int]     = mapped_column(Integer, nullable=False, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False,
+        server_default=func.now(), onupdate=func.now(), default=func.now(),
+    )
+
+
+# ── Phase 3B: Pydantic schemas ────────────────────────────────────────────────
+
+class QueueJobLogResponse(BaseModel):
+    id: str
+    job_id: str
+    level: str
+    stage: Optional[str]
+    message: str
+    created_at: datetime
+    model_config = {"from_attributes": True}
+
+
+class CleanupResponse(BaseModel):
+    files_deleted: int
+    bytes_freed: int
+    files_skipped: int
+    errors: list[str]
+
+
+class QueueHealthResponse(BaseModel):
+    status: str          # "ok" | "warning" | "error"
+    worker_alive: bool
+    worker_paused: bool
+    free_disk_gb: float
+    disk_warning: bool
+    uploads_today: int
+    upload_limit: int
+    uploads_remaining: int
+    queued_jobs: int
+    active_jobs: int
+    details: list[str]
+
+
+class QueueStatsResponse(BaseModel):
+    total: int
+    queued: int
+    processing: int
+    completed: int
+    failed: int
+    cancelled: int
+    scheduled: int
+    uploads_today: int
+    upload_limit: int
+    free_disk_gb: float
+    avg_processing_minutes: float

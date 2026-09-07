@@ -1,5 +1,5 @@
 """
-backend/services/queue_processor.py — Phase 3A content queue worker.
+backend/services/queue_processor.py — Phase 3A/3B content queue worker.
 
 Orchestrates the full pipeline for each queue job:
     Research → Script → TTS → Video → Thumbnail → YouTube Upload → Schedule
@@ -9,8 +9,9 @@ Design:
   - Database-backed state: survives backend restart.
   - Duplicate upload protection: youtube_video_id guards against re-upload.
   - Pause/resume: respected at the boundary between jobs, not mid-job.
-  - Retry: transient errors retry up to max_retries; permanent errors fail fast.
+  - Retry: transient errors retry up to max_retries with configurable delays.
   - Recovery: stale "active" jobs on startup are detected and requeued/failed.
+  - Phase 3B: per-job logging, disk-space check, daily upload limit.
   - All generated media stays on G: — never C:.
 
 This module ONLY orchestrates existing services. It does not re-implement
@@ -126,18 +127,22 @@ def _worker_loop() -> None:
 def _claim_next_job() -> Optional[str]:
     """
     Atomically pick the highest-priority queued job and mark it as active.
+    Respects next_retry_at — skips jobs whose retry window hasn't elapsed.
     Returns the job ID, or None if the queue is empty.
-    Uses a DB-level update so concurrent workers (if ever added) can't
-    double-claim the same job.
     """
     from backend.db import SessionLocal
     from backend.queue_models import ContentQueueJob, QueueStatus
 
     db = SessionLocal()
     try:
+        now = datetime.now(timezone.utc)
         job = (
             db.query(ContentQueueJob)
-            .filter(ContentQueueJob.status == QueueStatus.QUEUED)
+            .filter(
+                ContentQueueJob.status == QueueStatus.QUEUED,
+                # Only claim if next_retry_at is null or in the past
+                (ContentQueueJob.next_retry_at.is_(None) | (ContentQueueJob.next_retry_at <= now)),
+            )
             .order_by(
                 ContentQueueJob.priority.desc(),
                 ContentQueueJob.created_at.asc(),
@@ -149,7 +154,8 @@ def _claim_next_job() -> Optional[str]:
 
         job.status = QueueStatus.RESEARCHING
         job.current_stage = "Starting…"
-        job.started_at = datetime.now(timezone.utc)
+        job.started_at = now
+        job.next_retry_at = None  # clear retry timer on claim
         db.commit()
         return job.id
     except Exception as exc:
@@ -184,24 +190,71 @@ def _run_full_pipeline(job_id: str) -> None:
     Orchestrate all pipeline stages for one job.
     Each stage updates the job status, current_stage, and progress in the DB.
     """
-    from backend.db import SessionLocal
-    from backend.queue_models import ContentQueueJob, QueueStatus
+    from backend.queue_models import QueueStatus
+    from backend.services.queue_services import (
+        log_job, check_disk_space, check_upload_limit,
+        get_min_free_disk_gb, increment_uploads_today,
+    )
+
+    log_job(job_id, "Pipeline started.", stage="init")
+
+    # ── Disk-space check ───────────────────────────────────────────────────
+    disk_ok, free_gb = check_disk_space()
+    if not disk_ok:
+        min_gb = get_min_free_disk_gb()
+        msg = (
+            f"Queue paused: only {free_gb:.1f} GB free on G:. "
+            f"Minimum required is {min_gb} GB."
+        )
+        log_job(job_id, msg, level="warning", stage="disk_check")
+        from backend.db import SessionLocal
+        from backend.queue_models import ContentQueueJob
+        db = SessionLocal()
+        try:
+            job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+            if job:
+                job.status = QueueStatus.QUEUED  # put back in queue
+                job.current_stage = msg
+                db.commit()
+        finally:
+            db.close()
+        pause_queue()
+        raise RuntimeError(msg)
 
     # ── Stage 1: Research + Script (5–15%) ────────────────────────────────
     _update_job(job_id, status=QueueStatus.RESEARCHING, stage="Researching topic…", progress=2)
+    log_job(job_id, "Research started.", stage="research")
     content_project_id = _stage_research_and_script(job_id)
+    log_job(job_id, f"Script generated: project_id={content_project_id}", stage="research")
 
     # ── Stage 2: TTS narration (15–30%) ───────────────────────────────────
     _update_job(job_id, status=QueueStatus.GENERATING_AUDIO, stage="Generating narration…", progress=15)
+    log_job(job_id, "TTS narration started.", stage="tts")
     audio_id = _stage_generate_audio(job_id, content_project_id)
+    log_job(job_id, f"TTS completed: audio_id={audio_id}", stage="tts")
 
     # ── Stage 3: Video generation (30–87%) ────────────────────────────────
     _update_job(job_id, status=QueueStatus.GENERATING_VIDEO, stage="Generating video…", progress=30)
+    log_job(job_id, "Video generation started.", stage="video")
     video_job_id = _stage_generate_video(job_id, content_project_id, audio_id)
+    log_job(job_id, f"Video generated: video_job_id={video_job_id}", stage="video")
+
+    # ── Upload limit check before YouTube stage ────────────────────────────
+    upload_ok, uploads_today, upload_limit = check_upload_limit()
+    if not upload_ok:
+        msg = (
+            f"Daily upload limit reached ({uploads_today}/{upload_limit}). "
+            "Job will retry when the limit resets (UTC midnight)."
+        )
+        log_job(job_id, msg, level="warning", stage="youtube")
+        raise RuntimeError(msg)
 
     # ── Stage 4: YouTube upload + thumbnail + schedule (87–100%) ──────────
     _update_job(job_id, status=QueueStatus.UPLOADING, stage="Uploading to YouTube…", progress=87)
+    log_job(job_id, "YouTube upload started.", stage="youtube")
     _stage_youtube(job_id, video_job_id)
+    increment_uploads_today()
+    log_job(job_id, "YouTube upload complete.", stage="youtube")
 
     # ── Done ───────────────────────────────────────────────────────────────
     _update_job(
@@ -211,6 +264,7 @@ def _run_full_pipeline(job_id: str) -> None:
         progress=100,
         completed_at=datetime.now(timezone.utc),
     )
+    log_job(job_id, "Job completed successfully.", stage="complete")
 
 
 # ── Stage implementations ──────────────────────────────────────────────────────
@@ -644,9 +698,12 @@ def _retry_call(
     permanent_exceptions: tuple = (),
 ) -> object:
     """
-    Call fn() with bounded exponential-backoff retry on transient errors.
+    Call fn() with bounded configurable-delay retry on transient errors.
     Permanent errors raise immediately.
+    Phase 3B: uses QUEUE_RETRY_DELAY_N env vars instead of 2^n.
     """
+    from backend.services.queue_services import log_job, get_retry_delay
+
     last_exc = None
     for attempt in range(1, max_retries + 2):  # max_retries + 1 attempts total
         try:
@@ -663,11 +720,13 @@ def _retry_call(
                 raise exc
             if attempt > max_retries:
                 break
-            delay = min(2 ** attempt, 64)
-            logger.warning(
-                "[%s] Transient error on attempt %d/%d: %s. Retrying in %ds.",
-                stage_name, attempt, max_retries, str(exc)[:80], delay,
+            delay = get_retry_delay(attempt)
+            msg = (
+                f"[{stage_name}] Transient error attempt {attempt}/{max_retries}: "
+                f"{str(exc)[:80]}. Retrying in {delay}s."
             )
+            logger.warning(msg)
+            log_job(job_id, msg, level="warning", stage=stage_name)
             time.sleep(delay)
 
     raise last_exc
@@ -705,28 +764,37 @@ def _update_job(
 def _mark_failed(job_id: str, message: str) -> None:
     from backend.db import SessionLocal
     from backend.queue_models import ContentQueueJob, QueueStatus
+    from backend.services.queue_services import log_job, get_retry_delay
+    from datetime import timedelta
 
     db = SessionLocal()
     try:
         job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
         if not job:
             return
-        # Only bump retry_count if job has retries remaining
         if job.retry_count < job.max_retries:
             job.retry_count += 1
-            job.status        = QueueStatus.QUEUED  # requeue for retry
+            next_attempt = job.retry_count
+            delay_s = get_retry_delay(next_attempt)
+            job.status        = QueueStatus.QUEUED
             job.current_stage = f"Retrying (attempt {job.retry_count}/{job.max_retries})…"
             job.progress      = 0
-            logger.info(
-                "Requeuing job %s for retry %d/%d",
-                job_id, job.retry_count, job.max_retries,
+            job.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay_s)
+            db.commit()
+            log_job(
+                job_id,
+                f"Retrying job (attempt {job.retry_count}/{job.max_retries}) in {delay_s}s: {message[:120]}",
+                level="warning", stage="retry",
             )
+            logger.info("Requeuing job %s for retry %d/%d", job_id, job.retry_count, job.max_retries)
         else:
             job.status        = QueueStatus.FAILED
             job.error_message = message[:500]
             job.current_stage = "Failed"
+            job.failed_at     = datetime.now(timezone.utc)
+            db.commit()
+            log_job(job_id, f"Job permanently failed: {message[:200]}", level="error", stage="failed")
             logger.warning("Job %s permanently failed: %s", job_id, message[:120])
-        db.commit()
     except Exception as exc:
         logger.error("_mark_failed failed: %s", exc)
     finally:
