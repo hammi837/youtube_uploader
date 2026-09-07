@@ -30,8 +30,11 @@ from backend.db import get_db
 from backend.queue_models import (
     BulkQueueRequest,
     BulkQueueResponse,
+    CleanupResponse,
     ContentQueueJob,
+    QueueHealthResponse,
     QueueJobResponse,
+    QueueStatsResponse,
     QueueStatus,
     QueueStatusResponse,
     queue_job_to_response,
@@ -43,6 +46,18 @@ from backend.services.queue_processor import (
     pause_queue,
     resume_queue,
     start_worker,
+    stop_worker,
+)
+from backend.services.queue_services import (
+    find_duplicate_topics,
+    get_job_logs,
+    get_queue_health,
+    get_queue_stats,
+    get_uploads_today,
+    get_upload_limit,
+    check_disk_space,
+    get_min_free_disk_gb,
+    run_cleanup,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,6 +106,18 @@ def create_queue_jobs(
     else:
         schedule_times = [None] * len(body.topics)
         schedule_summary = [f"Video {i+1} '{t[:40]}': no schedule" for i, t in enumerate(body.topics)]
+
+    # ── Duplicate topic detection ──────────────────────────────────────────
+    duplicates = find_duplicate_topics(body.topics)
+    if duplicates:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"The following topics already have pending/active queue jobs: "
+                f"{', '.join(duplicates[:5])}. "
+                "Cancel existing jobs first or use different topics."
+            ),
+        )
 
     # ── Create job records ─────────────────────────────────────────────────
     jobs: list[ContentQueueJob] = []
@@ -142,9 +169,11 @@ def get_queue_status(db: Session = Depends(get_db)) -> QueueStatusResponse:
             ContentQueueJob.status == s
         ).count()
 
-    processing = sum(
-        counts.get(s, 0) for s in QueueStatus.ACTIVE
-    )
+    processing = sum(counts.get(s, 0) for s in QueueStatus.ACTIVE)
+    uploads_today = get_uploads_today()
+    upload_limit  = get_upload_limit()
+    _, free_gb    = check_disk_space()
+    min_gb        = get_min_free_disk_gb()
 
     return QueueStatusResponse(
         queue_running=is_worker_alive(),
@@ -157,6 +186,11 @@ def get_queue_status(db: Session = Depends(get_db)) -> QueueStatusResponse:
         failed=counts.get(QueueStatus.FAILED, 0),
         cancelled=counts.get(QueueStatus.CANCELLED, 0),
         paused=counts.get(QueueStatus.PAUSED, 0),
+        uploads_today=uploads_today,
+        upload_limit=upload_limit,
+        uploads_remaining=max(0, upload_limit - uploads_today),
+        free_disk_gb=free_gb,
+        disk_warning=free_gb < min_gb,
     )
 
 
@@ -179,6 +213,23 @@ def list_queue_jobs(
         q = q.filter(ContentQueueJob.status == status_filter)
     jobs = q.order_by(ContentQueueJob.created_at.desc()).limit(limit).all()
     return [queue_job_to_response(j) for j in jobs]
+
+
+# ── GET /api/queue/health — MUST be before /{job_id} ─────────────────────────
+
+@router.get("/health", response_model=QueueHealthResponse)
+def get_queue_health_endpoint() -> QueueHealthResponse:
+    """Return queue health: worker state, disk space, upload limit."""
+    h = get_queue_health()
+    return QueueHealthResponse(**h)
+
+
+# ── GET /api/queue/stats — MUST be before /{job_id} ──────────────────────────
+
+@router.get("/stats", response_model=QueueStatsResponse)
+def get_queue_stats_endpoint() -> QueueStatsResponse:
+    """Return detailed queue statistics including avg processing time."""
+    return QueueStatsResponse(**get_queue_stats())
 
 
 # ── GET /api/queue/{job_id} ───────────────────────────────────────────────────
@@ -327,3 +378,108 @@ def _get_job_or_404(job_id: str, db: Session) -> ContentQueueJob:
             detail=f"Queue job not found: {job_id}",
         )
     return job
+
+
+# ── POST /api/queue/stop ──────────────────────────────────────────────────────
+
+@router.post("/stop", status_code=status.HTTP_200_OK)
+def stop_queue_endpoint():
+    """
+    Gracefully stop the queue worker after the current job finishes.
+    State is preserved in the database.
+    """
+    stop_worker()
+    return {"message": "Queue worker stop requested. Current job will finish before stopping."}
+
+
+# ── POST /api/queue/retry-failed ─────────────────────────────────────────────
+
+@router.post("/retry-failed", status_code=status.HTTP_200_OK)
+def retry_all_failed(db: Session = Depends(get_db)):
+    """Reset ALL failed jobs back to queued. Returns count of jobs reset."""
+    failed_jobs = (
+        db.query(ContentQueueJob)
+        .filter(ContentQueueJob.status == QueueStatus.FAILED)
+        .all()
+    )
+    count = 0
+    for job in failed_jobs:
+        job.status        = QueueStatus.QUEUED
+        job.current_stage = "Requeued for retry (bulk retry)"
+        job.progress      = 0
+        job.retry_count   = 0
+        job.error_message = None
+        count += 1
+    db.commit()
+
+    if count > 0:
+        start_worker()
+
+    return {"message": f"Reset {count} failed job(s) to queued.", "count": count}
+
+
+# ── POST /api/queue/clear-completed ──────────────────────────────────────────
+
+@router.post("/clear-completed", status_code=status.HTTP_200_OK)
+def clear_completed_jobs(db: Session = Depends(get_db)):
+    """Delete all completed queue job records (NOT the generated files)."""
+    completed = (
+        db.query(ContentQueueJob)
+        .filter(ContentQueueJob.status == QueueStatus.COMPLETED)
+        .all()
+    )
+    count = len(completed)
+    for job in completed:
+        db.delete(job)
+    db.commit()
+    return {"message": f"Deleted {count} completed job record(s).", "count": count}
+
+
+# ── POST /api/queue/clear-failed ─────────────────────────────────────────────
+
+@router.post("/clear-failed", status_code=status.HTTP_200_OK)
+def clear_failed_jobs(db: Session = Depends(get_db)):
+    """Delete all failed/cancelled queue job records."""
+    jobs = (
+        db.query(ContentQueueJob)
+        .filter(ContentQueueJob.status.in_([QueueStatus.FAILED, QueueStatus.CANCELLED]))
+        .all()
+    )
+    count = len(jobs)
+    for job in jobs:
+        db.delete(job)
+    db.commit()
+    return {"message": f"Deleted {count} failed/cancelled job record(s).", "count": count}
+
+
+# ── POST /api/queue/cleanup ───────────────────────────────────────────────────
+
+@router.post("/cleanup", response_model=CleanupResponse)
+def run_cleanup_endpoint(
+    dry_run: bool = False,
+    db: Session = Depends(get_db),
+) -> CleanupResponse:
+    """
+    Clean up old generated media files.
+    Use ?dry_run=true to preview without deleting.
+    """
+    result = run_cleanup(dry_run=dry_run)
+    return CleanupResponse(
+        files_deleted=result["files_deleted"],
+        bytes_freed=result["bytes_freed"],
+        files_skipped=result["files_skipped"],
+        errors=result["errors"],
+    )
+
+
+# ── GET /api/queue/{job_id}/logs ──────────────────────────────────────────────
+
+@router.get("/{job_id}/logs")
+def get_job_logs_endpoint(
+    job_id: str,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    """Return chronological log entries for a job. No credentials exposed."""
+    _get_job_or_404(job_id, db)
+    return get_job_logs(job_id, limit=limit)
