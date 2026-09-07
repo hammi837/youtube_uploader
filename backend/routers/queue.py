@@ -265,13 +265,13 @@ def cancel_queue_job(
         )
 
     if job_id == get_current_job_id():
-        # Processing — we don't kill FFmpeg mid-run; mark for post-completion cancel.
-        # For now, mark as failed with a clear message.
         job.status        = QueueStatus.CANCELLED
         job.current_stage = "Cancelled (was processing — will stop after current step)"
+        job.cancelled_at  = datetime.now(timezone.utc)
     else:
         job.status        = QueueStatus.CANCELLED
         job.current_stage = "Cancelled by user"
+        job.cancelled_at  = datetime.now(timezone.utc)
 
     db.commit()
     db.refresh(job)

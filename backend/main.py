@@ -41,9 +41,12 @@ import backend.queue_models     # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
-    # Phase 3A: start the queue worker on backend startup
-    from backend.services.queue_processor import start_worker
-    start_worker()
+    # Phase 3A/3B: start the queue worker on backend startup
+    # Controlled by QUEUE_AUTO_RUN env var (default: true)
+    auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
+    if auto_run not in ("false", "0", "no", "off"):
+        from backend.services.queue_processor import start_worker
+        start_worker()
     yield
 
 

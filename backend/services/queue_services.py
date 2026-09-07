@@ -351,6 +351,58 @@ def run_cleanup(dry_run: bool = False) -> dict:
                 except Exception as exc:
                     errors.append(f"Could not clean temp dir {job_temp.name}: {str(exc)[:80]}")
 
+        # ── Clean old TTS audio files ──────────────────────────────────────
+        # Safe to delete audio when:
+        #   1. The audio record's content_project_id has no active/queued queue job.
+        #   2. The audio file is older than the retention cutoff.
+        #   3. The file actually exists on disk.
+        try:
+            from backend.tts_models import GeneratedAudio, AudioStatus
+
+            # Collect audio IDs referenced by active/queued queue jobs
+            active_audio_ids: set[str] = set()
+            for qjob in active_jobs:
+                if qjob.content_project_id:
+                    audio_rows = (
+                        db.query(GeneratedAudio.id)
+                        .filter(GeneratedAudio.content_project_id == qjob.content_project_id)
+                        .all()
+                    )
+                    for row in audio_rows:
+                        active_audio_ids.add(row.id)
+
+            # Find old completed audio records not referenced by active jobs
+            old_audio = (
+                db.query(GeneratedAudio)
+                .filter(
+                    GeneratedAudio.status == AudioStatus.COMPLETED,
+                    GeneratedAudio.file_path.isnot(None),
+                    GeneratedAudio.created_at < cutoff,
+                )
+                .all()
+            )
+            for audio in old_audio:
+                if audio.id in active_audio_ids:
+                    files_skipped += 1
+                    continue
+                if not audio.file_path:
+                    continue
+                fp = Path(audio.file_path)
+                if not fp.exists():
+                    continue
+                try:
+                    size = fp.stat().st_size
+                    if not dry_run:
+                        fp.unlink()
+                    files_deleted += 1
+                    bytes_freed += size
+                    logger.info("%sDeleted audio: %s (%d bytes)", "[DRY] " if dry_run else "", fp.name, size)
+                except Exception as exc:
+                    errors.append(f"Could not delete audio {fp.name}: {str(exc)[:80]}")
+
+        except Exception as exc:
+            errors.append(f"TTS audio cleanup error: {str(exc)[:120]}")
+
     finally:
         db.close()
 

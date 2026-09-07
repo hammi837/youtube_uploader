@@ -592,10 +592,12 @@ class TestStateTimestamps:
     def test_cancel_sets_cancelled_at(self, client, db):
         job = _make_job(db, status=QueueStatus.QUEUED)
         with patch("backend.routers.queue.get_current_job_id", return_value="other"):
-            client.post(f"/api/queue/{job.id}/cancel")
+            r = client.post(f"/api/queue/{job.id}/cancel")
+        assert r.status_code == 200
         db.expire(job); db.refresh(job)
-        # cancelled_at is not set by current router (only status/stage) — just verify status
         assert job.status == QueueStatus.CANCELLED
+        # Fix 2 (Phase 3B): cancelled_at must be populated
+        assert job.cancelled_at is not None
 
     # AI. _mark_failed sets failed_at when no retries left
     def test_mark_failed_sets_failed_at(self, db):
@@ -692,3 +694,141 @@ class TestPhase3BSecurity:
             r = client.get("/api/queue/stats")
         assert "GROQ_API_KEY" not in r.text
         assert "access_token" not in r.text
+
+
+# ── QUEUE_AUTO_RUN env var ────────────────────────────────────────────────────
+
+class TestQueueAutoRun:
+    """Fix 1 (Phase 3B): QUEUE_AUTO_RUN=false must prevent auto-start."""
+
+    def test_auto_run_true_starts_worker(self):
+        """QUEUE_AUTO_RUN=true (default) should call start_worker."""
+        from backend.services.queue_processor import start_worker as _sw
+        with patch.dict(os.environ, {"QUEUE_AUTO_RUN": "true"}):
+            auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
+            should_start = auto_run not in ("false", "0", "no", "off")
+        assert should_start is True
+
+    def test_auto_run_false_skips_worker(self):
+        """QUEUE_AUTO_RUN=false should NOT call start_worker."""
+        with patch.dict(os.environ, {"QUEUE_AUTO_RUN": "false"}):
+            auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
+            should_start = auto_run not in ("false", "0", "no", "off")
+        assert should_start is False
+
+    def test_auto_run_zero_skips_worker(self):
+        with patch.dict(os.environ, {"QUEUE_AUTO_RUN": "0"}):
+            auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
+            should_start = auto_run not in ("false", "0", "no", "off")
+        assert should_start is False
+
+    def test_auto_run_unset_defaults_true(self):
+        env = {k: v for k, v in os.environ.items() if k != "QUEUE_AUTO_RUN"}
+        with patch.dict(os.environ, env, clear=True):
+            auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
+            should_start = auto_run not in ("false", "0", "no", "off")
+        assert should_start is True
+
+
+# ── TTS audio cleanup ─────────────────────────────────────────────────────────
+
+class TestTTSAudioCleanup:
+    """Fix 3 (Phase 3B): cleanup should remove old orphaned TTS audio files."""
+
+    def test_cleanup_removes_old_audio(self, db, tmp_path):
+        """Audio older than retention for completed queue jobs should be deleted."""
+        from backend.services.queue_services import run_cleanup
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.tts_models import GeneratedAudio, AudioStatus
+        from backend.content_models import ContentProject, ContentStatus
+        from datetime import timedelta
+
+        # Create a completed content project
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Old topic",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=10,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+
+        # Create an old audio file
+        old_audio_file = tmp_path / "old_narration.wav"
+        old_audio_file.write_bytes(b"\x00" * 1000)
+
+        old_time = datetime.now(timezone.utc) - timedelta(days=10)
+        audio = GeneratedAudio(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            voice="local-zira",
+            language="en",
+            text_length=100,
+            file_path=str(old_audio_file),
+            file_size_bytes=1000,
+            duration_seconds=5.0,
+            status=AudioStatus.COMPLETED,
+            created_at=old_time,
+            updated_at=old_time,
+        )
+        db.add(audio)
+        db.commit()
+
+        with patch("backend.db.SessionLocal", SharedTestingSessionLocal), \
+             patch.dict(os.environ, {"MEDIA_RETENTION_DAYS": "7", "DATA_DIR": str(tmp_path)}):
+            result = run_cleanup(dry_run=False)
+
+        # Old audio file should have been deleted
+        assert not old_audio_file.exists()
+        assert result["files_deleted"] >= 1
+
+    def test_cleanup_skips_audio_for_active_queue_job(self, db, tmp_path):
+        """Audio for an active queue job must NOT be deleted."""
+        from backend.services.queue_services import run_cleanup
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.tts_models import GeneratedAudio, AudioStatus
+        from backend.content_models import ContentProject, ContentStatus
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Active topic",
+            language="en", tone="engaging",
+            target_duration_seconds=180, scene_count=10,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+
+        active_audio_file = tmp_path / "active_narration.wav"
+        active_audio_file.write_bytes(b"\x00" * 1000)
+
+        # Audio record with old timestamp but for a QUEUED job
+        audio = GeneratedAudio(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            voice="local-zira", language="en",
+            text_length=100, file_path=str(active_audio_file),
+            file_size_bytes=1000, duration_seconds=5.0,
+            status=AudioStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc) - timedelta(days=10),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(audio)
+
+        # Queue job is QUEUED (active) — audio must be protected
+        queue_job = _make_job(db, status=QueueStatus.QUEUED,
+                              topic="Active topic",
+                              content_project_id=project.id)
+        db.commit()
+
+        with patch("backend.db.SessionLocal", SharedTestingSessionLocal), \
+             patch.dict(os.environ, {"MEDIA_RETENTION_DAYS": "7", "DATA_DIR": str(tmp_path)}):
+            run_cleanup(dry_run=False)
+
+        # Active job's audio must still exist
+        assert active_audio_file.exists()
