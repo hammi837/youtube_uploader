@@ -246,10 +246,15 @@ export interface QueueJob {
   thumbnail_uploaded: boolean;
   schedule_set: boolean;
   error_message: string | null;
+  last_error_type: string | null;
+  disk_usage_bytes: number | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  failed_at: string | null;
+  cancelled_at: string | null;
+  next_retry_at: string | null;
 }
 
 export interface BulkQueueRequest {
@@ -284,4 +289,55 @@ export interface QueueStatusSummary {
   failed: number;
   cancelled: number;
   paused: number;
+}
+
+// ── Phase 3B: Queue additional types ─────────────────────────────────────────
+
+export interface CleanupResult {
+  files_deleted: number;
+  bytes_freed: number;
+  files_skipped: number;
+  errors: string[];
+  dry_run?: boolean;
+}
+
+export interface QueueHealth {
+  status: 'ok' | 'warning' | 'error';
+  worker_alive: boolean;
+  worker_paused: boolean;
+  free_disk_gb: number;
+  disk_warning: boolean;
+  uploads_today: number;
+  upload_limit: number;
+  uploads_remaining: number;
+  queued_jobs: number;
+  active_jobs: number;
+  details: string[];
+}
+
+// QueueStatusSummary includes current_job_id for the dashboard
+export interface QueueStatusSummaryWithJobId extends QueueStatusSummary {
+  current_job_id: string | null;
+}
+
+export interface QueueStats {
+  total: number;
+  queued: number;
+  processing: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  scheduled: number;
+  uploads_today: number;
+  upload_limit: number;
+  free_disk_gb: number;
+  avg_processing_minutes: number;
+}
+
+export interface JobLogEntry {
+  id: string;
+  level: string;
+  stage: string | null;
+  message: string;
+  created_at: string;
 }

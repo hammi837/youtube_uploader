@@ -1038,3 +1038,66 @@ body {
   margin-top: 0.4rem;
   flex-wrap: wrap;
 }
+
+/* ── Phase 3B: Queue enhancements ──────────────────────────────────────────── */
+
+/* Stats right column */
+.queue-stats__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+}
+
+/* Stage pipeline */
+.queue-job-stages {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0.35rem 0;
+  flex-wrap: wrap;
+}
+.queue-stage {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--color-muted);
+}
+.queue-stage--done   { color: var(--color-success); }
+.queue-stage--active { color: var(--color-info); font-weight: 600; }
+.queue-stage__dot    { font-size: 0.85rem; }
+
+/* Job log panel */
+.job-logs-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 1rem;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+}
+.job-logs-list {
+  overflow-y: auto;
+  flex: 1;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.8rem;
+  line-height: 1.6;
+  background: var(--color-bg);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.75rem;
+}
+.job-log-entry {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.1rem 0;
+  border-bottom: 1px solid rgba(255,255,255,0.03);
+  word-break: break-word;
+}
+.job-log-entry__time  { color: var(--color-muted); white-space: nowrap; flex-shrink: 0; }
+.job-log-entry__stage { color: #a78bfa; white-space: nowrap; flex-shrink: 0; }
+.job-log-entry__msg   { flex: 1; }
+
+/* Disk/upload counters */
+.color-error { color: var(--color-error); }

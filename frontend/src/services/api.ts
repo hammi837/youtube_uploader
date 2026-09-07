@@ -3,10 +3,14 @@ import type {
   AuthStatus,
   BulkQueueRequest,
   BulkQueueResponse,
+  CleanupResult,
   ContentProjectDetail,
   ContentProjectSummary,
   HealthResponse,
+  JobLogEntry,
+  QueueHealth,
   QueueJob,
+  QueueStats,
   QueueStatusSummary,
   ResearchRequest,
   ResearchResponse,
@@ -306,4 +310,46 @@ export async function resumeQueue(): Promise<void> {
 export async function startQueue(): Promise<void> {
   const res = await fetch(`${BASE_URL}/api/queue/start`, { method: 'POST' });
   return handleResponse<void>(res);
+}
+
+// ── Phase 3B: Queue additional endpoints ─────────────────────────────────────
+
+export async function stopQueue(): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/queue/stop`, { method: 'POST' });
+  return handleResponse<void>(res);
+}
+
+export async function retryAllFailed(): Promise<{ count: number; message: string }> {
+  const res = await fetch(`${BASE_URL}/api/queue/retry-failed`, { method: 'POST' });
+  return handleResponse<{ count: number; message: string }>(res);
+}
+
+export async function clearCompleted(): Promise<{ count: number; message: string }> {
+  const res = await fetch(`${BASE_URL}/api/queue/clear-completed`, { method: 'POST' });
+  return handleResponse<{ count: number; message: string }>(res);
+}
+
+export async function clearFailed(): Promise<{ count: number; message: string }> {
+  const res = await fetch(`${BASE_URL}/api/queue/clear-failed`, { method: 'POST' });
+  return handleResponse<{ count: number; message: string }>(res);
+}
+
+export async function runCleanup(dryRun = false): Promise<CleanupResult> {
+  const res = await fetch(`${BASE_URL}/api/queue/cleanup?dry_run=${dryRun}`, { method: 'POST' });
+  return handleResponse<CleanupResult>(res);
+}
+
+export async function getQueueHealth(): Promise<QueueHealth> {
+  const res = await fetch(`${BASE_URL}/api/queue/health`);
+  return handleResponse<QueueHealth>(res);
+}
+
+export async function getQueueStats(): Promise<QueueStats> {
+  const res = await fetch(`${BASE_URL}/api/queue/stats`);
+  return handleResponse<QueueStats>(res);
+}
+
+export async function getJobLogs(jobId: string, limit = 100): Promise<JobLogEntry[]> {
+  const res = await fetch(`${BASE_URL}/api/queue/${jobId}/logs?limit=${limit}`);
+  return handleResponse<JobLogEntry[]>(res);
 }
