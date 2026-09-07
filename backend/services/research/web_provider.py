@@ -201,7 +201,10 @@ class WebResearchProvider(ResearchProvider):
         region = _language_to_ddg_region(language)
 
         try:
-            with DDGS() as ddgs:
+            # Explicit timeout prevents the connection from hanging indefinitely.
+            # Default 20s; tune via RESEARCH_DDG_TIMEOUT env var.
+            ddg_timeout = int(os.getenv("RESEARCH_DDG_TIMEOUT", "20"))
+            with DDGS(timeout=ddg_timeout) as ddgs:
                 raw_results = list(ddgs.text(
                     query,
                     region=region,
