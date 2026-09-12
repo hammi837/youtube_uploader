@@ -24,6 +24,7 @@ Provider selection (TTS_PROVIDER env var):
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from backend.services.tts.base import (
@@ -84,14 +85,16 @@ class AutoTTSManager(TTSProvider):
         """
         try:
             logger.info(
-                "AutoTTSManager: trying primary provider '%s'",
-                self._primary.provider_name,
+                "AutoTTSManager: attempting primary provider '%s' for text_len=%d",
+                self._primary.provider_name, len(text),
             )
             result = await self._primary.synthesize(text, voice, output_path)
             self._last_used_provider = self._primary.provider_name
             logger.info(
-                "AutoTTSManager: primary provider '%s' succeeded",
+                "AutoTTSManager: primary provider '%s' succeeded (file=%s, size=%d bytes)",
                 self._primary.provider_name,
+                Path(result.file_path).name,
+                result.file_size_bytes,
             )
             return result
 
@@ -109,11 +112,24 @@ class AutoTTSManager(TTSProvider):
             # (local produces WAV, not MP3)
             fallback_path = _adjust_path_for_provider(output_path, self._fallback)
 
+            logger.info(
+                "AutoTTSManager: attempting fallback synthesis with '%s' → %s",
+                self._fallback.provider_name, fallback_path,
+            )
+            logger.info(
+                "AutoTTSManager: calling fallback.synthesize() with text_len=%d voice=%s",
+                len(text), _local_voice(voice),
+            )
             result = await self._fallback.synthesize(text, _local_voice(voice), fallback_path)
+            logger.info(
+                "AutoTTSManager: fallback.synthesize() returned successfully",
+            )
             self._last_used_provider = self._fallback.provider_name
             logger.info(
-                "AutoTTSManager: fallback provider '%s' succeeded",
+                "AutoTTSManager: fallback provider '%s' succeeded (file=%s, size=%d bytes)",
                 self._fallback.provider_name,
+                Path(result.file_path).name,
+                result.file_size_bytes,
             )
             return result
 
