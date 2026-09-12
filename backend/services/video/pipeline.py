@@ -126,15 +126,18 @@ def _run_pipeline_sync(
 
     # ── 1. Verify FFmpeg ───────────────────────────────────────────────────
     step(5, "Verifying FFmpeg...")
+    logger.info("[video_pipeline %s] Verifying FFmpeg availability", job_id)
     ffmpeg_status = check_ffmpeg()
     if not ffmpeg_status["available"]:
+        logger.error("[video_pipeline %s] FFmpeg not available: %s", job_id, ffmpeg_status.get("error", "unknown"))
         raise PipelineConfigError(
             "FFmpeg is not available. Check FFMPEG_PATH configuration."
         )
-    logger.info("FFmpeg OK: %s", ffmpeg_status.get("version", "")[:60])
+    logger.info("[video_pipeline %s] FFmpeg OK: %s", job_id, ffmpeg_status.get("version", "")[:60])
 
     # ── 2. Load project + script ───────────────────────────────────────────
     step(5, "Loading project...")
+    logger.info("[video_pipeline %s] Loading project %s", job_id, content_project_id)
     from backend.db import SessionLocal
     from backend.content_models import ContentProject, GeneratedScriptRecord
     from backend.tts_models import GeneratedAudio, AudioStatus
@@ -145,10 +148,12 @@ def _run_pipeline_sync(
             ContentProject.id == content_project_id
         ).first()
         if not project:
+            logger.error("[video_pipeline %s] Project not found: %s", job_id, content_project_id)
             raise PipelineConfigError(
                 f"Content project not found: {content_project_id}"
             )
         if not project.script:
+            logger.error("[video_pipeline %s] Project has no script", job_id)
             raise PipelineConfigError(
                 "Content project has no generated script. Generate a script first."
             )
@@ -156,23 +161,28 @@ def _run_pipeline_sync(
         script_rec = project.script
         scenes = script_rec.scenes_as_list()
         if not scenes:
+            logger.error("[video_pipeline %s] Script has no scenes", job_id)
             raise PipelineConfigError("Script has no scenes.")
 
         title      = script_rec.title
         hook       = script_rec.hook or ""
         language   = project.language or "en"
+        logger.info("[video_pipeline %s] Loaded project: title='%s', scenes=%d, language=%s", job_id, title, len(scenes), language)
 
         # ── 3. Ensure audio ───────────────────────────────────────────────
         step(8, "Locating narration audio...")
+        logger.info("[video_pipeline %s] Locating narration audio (audio_id=%s)", job_id, audio_id)
         audio_record = None
         if audio_id:
             audio_record = db.query(GeneratedAudio).filter(
                 GeneratedAudio.id == audio_id,
                 GeneratedAudio.status == AudioStatus.COMPLETED,
             ).first()
+            logger.info("[video_pipeline %s] Found audio by ID: %s", job_id, audio_id)
 
         if not audio_record:
             # Find any completed audio for this project
+            logger.info("[video_pipeline %s] Searching for any completed audio for project", job_id)
             audio_record = (
                 db.query(GeneratedAudio)
                 .filter(
@@ -182,21 +192,30 @@ def _run_pipeline_sync(
                 .order_by(GeneratedAudio.created_at.desc())
                 .first()
             )
+            if audio_record:
+                logger.info("[video_pipeline %s] Found audio by project: %s", job_id, audio_record.id)
 
         if not audio_record:
             # Generate narration inline
             step(10, "Generating narration...")
+            logger.info("[video_pipeline %s] No audio found, generating inline", job_id)
             audio_record = _generate_narration_inline(
                 db, project, script_rec, job_id, temp_dir
             )
+            if audio_record:
+                logger.info("[video_pipeline %s] Inline narration generated: %s", job_id, audio_record.id)
+            else:
+                logger.error("[video_pipeline %s] Inline narration generation failed", job_id)
 
         if not audio_record or not audio_record.file_path:
+            logger.error("[video_pipeline %s] No audio available for video generation", job_id)
             raise PipelineConfigError(
                 "No completed narration audio found and inline generation failed."
             )
 
         narration_path = Path(audio_record.file_path)
         if not narration_path.exists():
+            logger.error("[video_pipeline %s] Audio file not found: %s", job_id, narration_path)
             raise PipelineConfigError(
                 f"Narration audio file not found on disk: {narration_path}"
             )
@@ -212,7 +231,7 @@ def _run_pipeline_sync(
             except Exception:
                 audio_duration = script_rec.estimated_duration_seconds or 180.0
 
-        logger.info("Audio duration: %.1fs", audio_duration)
+        logger.info("[video_pipeline %s] Audio duration: %.1fs, file: %s", job_id, audio_duration, narration_path.name)
 
     finally:
         db.close()
@@ -221,11 +240,13 @@ def _run_pipeline_sync(
 
     # ── 4. Build scene images ──────────────────────────────────────────────
     step(15, "Building scene visuals...")
+    logger.info("[video_pipeline %s] Building scene visuals for %d scenes", job_id, len(scenes))
     scene_image_paths: list[Path] = []
 
     # Title card (scene 0)
     title_card_path = temp_dir / "scene_000_title.png"
     try:
+        logger.info("[video_pipeline %s] Generating title card", job_id)
         generate_title_card(
             title=title,
             hook=hook,
@@ -235,12 +256,14 @@ def _run_pipeline_sync(
             topic_seed=title,
         )
         scene_image_paths.append(title_card_path)
+        logger.info("[video_pipeline %s] Title card generated: %s", job_id, title_card_path.name)
     except Exception as exc:
-        logger.warning("Title card generation failed: %s", exc)
+        logger.warning("[video_pipeline %s] Title card generation failed: %s", job_id, exc)
 
     for i, scene in enumerate(scenes):
         card_path = temp_dir / f"scene_{i + 1:03d}.png"
         try:
+            logger.info("[video_pipeline %s] Generating scene card %d/%d", job_id, i + 1, len(scenes))
             generate_scene_card(
                 scene_number=scene.get("scene_number", i + 1),
                 title=title,
@@ -252,17 +275,20 @@ def _run_pipeline_sync(
                 topic_seed=title,
             )
             scene_image_paths.append(card_path)
+            logger.info("[video_pipeline %s] Scene card %d generated: %s", job_id, i + 1, card_path.name)
         except Exception as exc:
-            logger.error("Scene card %d failed: %s", i + 1, exc)
+            logger.error("[video_pipeline %s] Scene card %d failed: %s", job_id, i + 1, exc)
             raise VideoGenerationError(f"Failed to generate scene card {i + 1}: {exc}") from exc
 
     step(30, f"Generated {len(scene_image_paths)} scene visuals.")
+    logger.info("[video_pipeline %s] All scene visuals generated: %d files", job_id, len(scene_image_paths))
 
     # ── 5. Calculate scene durations ──────────────────────────────────────
     # Build duration list: one entry per image (title card + scenes)
     all_scene_data = [{"narration": hook or title}]  # title card
     all_scene_data.extend(scenes)
     durations = calculate_scene_durations(all_scene_data, audio_duration)
+    logger.info("[video_pipeline %s] Scene durations calculated: %d scenes, total %.1fs", job_id, len(durations), sum(durations))
 
     # Pad/trim durations list to match image count
     while len(durations) < len(scene_image_paths):
@@ -271,6 +297,7 @@ def _run_pipeline_sync(
 
     # ── 6. Build per-scene video clips ────────────────────────────────────
     step(35, "Building scene clips...")
+    logger.info("[video_pipeline %s] Building %d scene clips", job_id, len(scene_image_paths))
     clip_paths: list[Path] = []
     n_clips = len(scene_image_paths)
 
@@ -283,44 +310,53 @@ def _run_pipeline_sync(
         )
         build_scene_clip(sc, clip_path, width, height)
         clip_paths.append(clip_path)
+        logger.info("[video_pipeline %s] Clip %d/%d built: %.1fs", job_id, i + 1, n_clips, dur)
         # Update progress between 35 and 55
         pct = 35 + int((i + 1) / n_clips * 20)
         step(pct, f"Built clip {i + 1}/{n_clips}...")
 
     step(55, "All scene clips built.")
+    logger.info("[video_pipeline %s] All %d scene clips built", job_id, len(clip_paths))
 
     # ── 7. Concatenate clips ───────────────────────────────────────────────
     step(58, "Concatenating scene clips...")
+    logger.info("[video_pipeline %s] Concatenating %d clips", job_id, len(clip_paths))
     concat_path = temp_dir / "concat.mp4"
     concatenate_clips(clip_paths, concat_path, temp_dir)
+    logger.info("[video_pipeline %s] Clips concatenated: %s", job_id, concat_path.name)
     step(65, "Clips concatenated.")
 
     # ── 8. Mix audio ──────────────────────────────────────────────────────
     step(68, "Mixing audio...")
+    logger.info("[video_pipeline %s] Starting audio mix", job_id)
     music_path = find_music_file() if music_enabled else None
     if music_path:
-        logger.info("Background music: %s", music_path.name)
+        logger.info("[video_pipeline %s] Background music: %s", job_id, music_path.name)
     else:
-        logger.info("No background music found — proceeding without music.")
+        logger.info("[video_pipeline %s] No background music found — proceeding without music.", job_id)
 
     audio_mixed_path = temp_dir / "with_audio.mp4"
+    logger.info("[video_pipeline %s] Mixing audio: concat=%s, narration=%s, music=%s", job_id, concat_path.name, narration_path.name, music_path.name if music_path else "None")
     mix_audio(concat_path, narration_path, music_path, audio_mixed_path)
+    logger.info("[video_pipeline %s] Audio mixed: %s", job_id, audio_mixed_path.name)
     step(78, "Audio mixed.")
 
     # ── 9. Generate captions ──────────────────────────────────────────────
     caption_srt_path = output_caption_path(job_id)
     if captions_enabled:
         step(80, "Generating captions (Whisper tiny)...")
+        logger.info("[video_pipeline %s] Generating captions with Whisper", job_id)
         try:
             generate_captions(
                 audio_path=narration_path,
                 output_srt_path=caption_srt_path,
                 language=language[:2],
             )
+            logger.info("[video_pipeline %s] Captions generated: %s", job_id, caption_srt_path.name)
             step(85, "Captions generated.")
         except Exception as exc:
             logger.warning(
-                "Whisper transcription failed (%s) — using fallback captions.", exc
+                "[video_pipeline %s] Whisper transcription failed (%s) — using fallback captions.", job_id, exc
             )
             try:
                 from backend.services.tts.narration import extract_narration_text
@@ -333,11 +369,13 @@ def _run_pipeline_sync(
                 finally:
                     db2.close()
                 generate_fallback_captions(narration_text, audio_duration, caption_srt_path)
+                logger.info("[video_pipeline %s] Fallback captions generated: %s", job_id, caption_srt_path.name)
                 step(85, "Fallback captions generated.")
             except Exception as exc2:
-                logger.warning("Fallback caption generation also failed: %s", exc2)
+                logger.warning("[video_pipeline %s] Fallback caption generation also failed: %s", job_id, exc2)
                 step(85, "Captions skipped.")
     else:
+        logger.info("[video_pipeline %s] Captions disabled", job_id)
         step(85, "Captions disabled.")
 
     # ── 10. Burn captions ──────────────────────────────────────────────────
@@ -345,13 +383,16 @@ def _run_pipeline_sync(
     captioned_path = temp_dir / "captioned.mp4"
     if captions_enabled and caption_srt_path.exists() and caption_srt_path.stat().st_size > 0:
         try:
+            logger.info("[video_pipeline %s] Burning captions into video", job_id)
             burn_captions(audio_mixed_path, caption_srt_path, captioned_path, width, height)
+            logger.info("[video_pipeline %s] Captions burned: %s", job_id, captioned_path.name)
             step(88, "Captions burned.")
         except Exception as exc:
-            logger.warning("Caption burn failed (%s) — using video without captions.", exc)
+            logger.warning("[video_pipeline %s] Caption burn failed (%s) — using video without captions.", job_id, exc)
             import shutil
             shutil.copy2(str(audio_mixed_path), str(captioned_path))
     else:
+        logger.info("[video_pipeline %s] Skipping caption burn (no captions or empty file)", job_id)
         import shutil
         shutil.copy2(str(audio_mixed_path), str(captioned_path))
         step(88, "Captions skipped.")
@@ -359,23 +400,29 @@ def _run_pipeline_sync(
     # ── 11. Final encode ───────────────────────────────────────────────────
     step(89, "Final encode (H.264/AAC)...")
     final_path = output_video_path(job_id)
+    logger.info("[video_pipeline %s] Starting final H.264/AAC encode: %s", job_id, final_path.name)
     final_encode(captioned_path, final_path, width, height, fps)
+    logger.info("[video_pipeline %s] Final encode completed: %s", job_id, final_path.name)
     step(93, "Video encoded.")
 
     # ── 12. Generate thumbnail ─────────────────────────────────────────────
     step(94, "Generating thumbnail...")
     thumb_path = output_thumbnail_path(job_id)
+    logger.info("[video_pipeline %s] Generating thumbnail: %s", job_id, thumb_path.name)
     try:
         generate_thumbnail(title=title, hook=hook, output_path=thumb_path)
+        logger.info("[video_pipeline %s] Thumbnail generated: %s", job_id, thumb_path.name)
     except Exception as exc:
-        logger.warning("Thumbnail generation failed: %s", exc)
+        logger.warning("[video_pipeline %s] Thumbnail generation failed: %s", job_id, exc)
         thumb_path = None
 
     step(95, "Thumbnail done.")
 
     # ── 13. Verify output ──────────────────────────────────────────────────
     step(96, "Verifying output...")
+    logger.info("[video_pipeline %s] Verifying final output: %s", job_id, final_path)
     if not final_path.exists() or final_path.stat().st_size == 0:
+        logger.error("[video_pipeline %s] Final MP4 was not created or is empty: %s", job_id, final_path)
         raise VideoGenerationError("Final MP4 was not created or is empty.")
 
     probe = probe_video(str(final_path))
@@ -383,13 +430,15 @@ def _run_pipeline_sync(
     size_bytes = probe.get("size_bytes", 0)
 
     logger.info(
-        "Video verified: %.1fs, %.1f MB, %d streams",
-        duration, size_bytes / 1024 / 1024, len(probe.get("streams", [])),
+        "[video_pipeline %s] Video verified: %.1fs, %.1f MB, %d streams",
+        job_id, duration, size_bytes / 1024 / 1024, len(probe.get("streams", [])),
     )
 
     # ── 14. Cleanup temp files ─────────────────────────────────────────────
     step(98, "Cleaning up...")
+    logger.info("[video_pipeline %s] Cleaning up temp files", job_id)
     cleanup_temp(job_id, keep_on_failure=False)
+    logger.info("[video_pipeline %s] Temp files cleaned", job_id)
 
     elapsed = time.perf_counter() - t_start
     logger.info(

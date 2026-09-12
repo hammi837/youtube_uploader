@@ -240,7 +240,9 @@ def _run_full_pipeline(job_id: str) -> None:
     # ── Stage 3: Video generation (30–87%) ────────────────────────────────
     _update_job(job_id, status=QueueStatus.GENERATING_VIDEO, stage="Generating video…", progress=30)
     log_job(job_id, "Video generation started.", stage="video")
+    logger.info("[queue_pipeline %s] Starting video generation stage", job_id)
     video_job_id = _stage_generate_video(job_id, content_project_id, audio_id)
+    logger.info("[queue_pipeline %s] Video generation stage completed: video_job_id=%s", job_id, video_job_id)
     log_job(job_id, f"Video generated: video_job_id={video_job_id}", stage="video")
 
     # ── Upload limit check before YouTube stage ────────────────────────────
@@ -494,10 +496,63 @@ def _stage_generate_video(
     from backend.video_generation_models import VideoGenerationJob, VideoJobStatus
     import os as _os
 
+    video_job_id_ref: list[str] = []
+
     def _progress_cb(pct: int, step: str) -> None:
         # Map video pipeline 0-100 into overall progress 30-87
         mapped = 30 + int(pct * 0.57)
+        logger.debug("[queue_video_progress %s] Pipeline progress: %d%%, step: %s, mapped: %d%%", job_id, pct, step, mapped)
         _update_job(job_id, stage=f"Video: {step}", progress=mapped)
+
+        # Also update the video job status/progress in the database
+        if video_job_id_ref:
+            from backend.db import SessionLocal
+            from backend.video_generation_models import VideoGenerationJob
+            db2 = SessionLocal()
+            try:
+                vj = db2.query(VideoGenerationJob).filter(
+                    VideoGenerationJob.id == video_job_id_ref[0]
+                ).first()
+                if vj:
+                    vj.progress = pct
+                    vj.current_step = step
+                    # Map progress to video job status based on actual step names
+                    if "FFmpeg" in step or "Verifying" in step or "Starting" in step:
+                        vj.status = VideoJobStatus.PREPARING
+                    elif "audio" in step.lower() or "narration" in step.lower():
+                        vj.status = VideoJobStatus.GENERATING_AUDIO
+                    elif "scene" in step.lower() or "visual" in step.lower() or "card" in step.lower():
+                        vj.status = VideoJobStatus.PREPARING_VISUALS
+                    elif "clip" in step.lower() or "concatenate" in step.lower():
+                        vj.status = VideoJobStatus.ASSEMBLING
+                    elif "caption" in step.lower():
+                        vj.status = VideoJobStatus.GENERATING_CAPTIONS
+                    elif "thumbnail" in step.lower():
+                        vj.status = VideoJobStatus.GENERATING_THUMBNAIL
+                    elif "Complete" in step or pct >= 100:
+                        vj.status = VideoJobStatus.COMPLETED
+                    else:
+                        # Fallback to progress-based mapping
+                        if pct < 10:
+                            vj.status = VideoJobStatus.PREPARING
+                        elif pct < 35:
+                            vj.status = VideoJobStatus.GENERATING_AUDIO
+                        elif pct < 65:
+                            vj.status = VideoJobStatus.PREPARING_VISUALS
+                        elif pct < 80:
+                            vj.status = VideoJobStatus.ASSEMBLING
+                        elif pct < 90:
+                            vj.status = VideoJobStatus.GENERATING_CAPTIONS
+                        elif pct < 95:
+                            vj.status = VideoJobStatus.GENERATING_THUMBNAIL
+                        else:
+                            vj.status = VideoJobStatus.COMPLETED
+                    db2.commit()
+                    logger.debug("[queue_video_progress %s] Video job updated: %d%%, %s, status=%s", job_id, pct, step, vj.status)
+            except Exception as exc:
+                logger.warning("[queue_video_progress %s] Failed to update video job progress: %s", job_id, exc)
+            finally:
+                db2.close()
 
     video_job_id_ref: list[str] = []
 
@@ -506,6 +561,7 @@ def _stage_generate_video(
 
         vj_id = str(uuid.uuid4())
         video_job_id_ref.append(vj_id)
+        logger.info("[queue_video %s] Creating video job: %s", job_id, vj_id)
 
         # Create VideoGenerationJob record
         db = SessionLocal()
@@ -530,9 +586,11 @@ def _stage_generate_video(
             if qj:
                 qj.video_job_id = vj_id
             db.commit()
+            logger.info("[queue_video %s] Video job created and linked: %s", job_id, vj_id)
         finally:
             db.close()
 
+        logger.info("[queue_video %s] Starting video pipeline: job_id=%s, project=%s, audio=%s", job_id, vj_id, content_project_id, audio_id)
         result = asyncio.run(run_pipeline(
             job_id=vj_id,
             content_project_id=content_project_id,
@@ -544,6 +602,7 @@ def _stage_generate_video(
             music_enabled=True,
             progress_callback=_progress_cb,
         ))
+        logger.info("[queue_video %s] Video pipeline returned successfully: output=%s", job_id, result.get("output_path"))
 
         # Update VideoGenerationJob record
         db2 = SessionLocal()
@@ -560,12 +619,34 @@ def _stage_generate_video(
                 vj2.file_size_bytes  = result.get("file_size_bytes")
                 vj2.completed_at  = datetime.now(timezone.utc)
                 db2.commit()
+                logger.info("[queue_video %s] Video job marked completed: %s, output=%s", job_id, vj_id, result.get("output_path"))
         finally:
             db2.close()
 
         return result
 
-    _retry_call(fn=_do_video, job_id=job_id, stage_name="video_generation")
+    try:
+        _retry_call(fn=_do_video, job_id=job_id, stage_name="video_generation")
+        logger.info("[queue_video %s] Video generation retry call succeeded", job_id)
+    except Exception as exc:
+        # Mark video job as failed if we have an ID
+        if video_job_id_ref:
+            db3 = SessionLocal()
+            try:
+                vj3 = db3.query(VideoGenerationJob).filter(
+                    VideoGenerationJob.id == video_job_id_ref[0]
+                ).first()
+                if vj3:
+                    vj3.status = VideoJobStatus.FAILED
+                    vj3.error_message = str(exc)[:500]
+                    vj3.completed_at = datetime.now(timezone.utc)
+                    db3.commit()
+                    logger.error("[queue_video %s] Video job marked as failed: %s, error=%s", job_id, video_job_id_ref[0], str(exc)[:200])
+            except Exception as db_exc:
+                logger.warning("[queue_video %s] Failed to mark video job as failed: %s", job_id, db_exc)
+            finally:
+                db3.close()
+        raise
 
     return video_job_id_ref[0] if video_job_id_ref else ""
 
