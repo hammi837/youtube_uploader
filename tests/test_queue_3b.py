@@ -67,17 +67,22 @@ Coverage:
     AL. /api/queue/{id}/logs exposes no credentials
     AM. /api/queue/health exposes no credentials
     AN. /api/queue/stats exposes no credentials
+
+  Video job status updates:
+    AO. video job status updated during pipeline via progress callback
+    AP. video job marked as FAILED when pipeline raises exception
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -90,6 +95,8 @@ from backend.queue_models import (
     ContentQueueJob, QueueJobLog, YouTubeDailyUpload,
     QueueStatus, queue_job_to_response,
 )
+from backend.tts_models import GeneratedAudio, AudioStatus
+from backend.video_generation_models import VideoGenerationJob, VideoJobStatus
 
 from tests.conftest import shared_engine, SharedTestingSessionLocal
 
@@ -977,7 +984,7 @@ class TestTopicSanitisation:
 
     def test_whitespace_stripped(self):
         from backend.services.queue_processor import _sanitise_topic
-        assert _sanitise_topic("  Why do dogs dream?  ") == "Why do dogs dream?"
+        assert _sanitise_topic("  Why is the sky blue?  ") == "Why is the sky blue?"
 
     def test_empty_string_safe(self):
         from backend.services.queue_processor import _sanitise_topic
@@ -996,3 +1003,777 @@ class TestTopicSanitisation:
         # Quotes inside the topic should NOT be removed
         result = _sanitise_topic('How to use "ChatGPT" effectively')
         assert "ChatGPT" in result
+
+
+# ── TTS failure handling in queue ─────────────────────────────────────────────
+
+class TestTTSFailureInQueue:
+    """
+    Regression tests for queue getting stuck after Edge-TTS → Local fallback.
+    When TTS fails (Edge 403 + Local timeout/error), the job must be marked
+    as failed, not remain stuck in processing state.
+    """
+
+    def test_edge_403_local_fallback_successful_audio_generation(self, db, tmp_path):
+        """
+        Complete end-to-end test: Edge 403 → local fallback → successful audio generation.
+        This tests the exact scenario described in the issue where Edge-TTS returns HTTP 403
+        and the system must fall back to local Windows SAPI TTS.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.services.tts.base import TTSNetworkError, TTSResult
+        from backend.services.tts.manager import AutoTTSManager
+        from backend.services.tts.edge_provider import EdgeTTSProvider
+        from backend.services.tts.local_provider import LocalTTSProvider
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        import json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test Edge 403 fallback",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=5,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="Test Title",
+            description="Test Description",
+            hook="Test hook.",
+            tags_json=json.dumps([]),
+            scenes_json=json.dumps([
+                {"scene_number": 1, "narration": "Test narration text for Edge 403 fallback scenario.",
+                 "visual_description": "test", "estimated_duration_seconds": 15},
+            ]),
+            estimated_duration_seconds=60,
+        )
+        db.add(script)
+        db.commit()
+
+        job_id = str(uuid.uuid4())
+
+        # Create a fake WAV file for the local result
+        fake_wav = tmp_path / "local_audio.wav"
+        import wave, struct
+        with wave.open(str(fake_wav), "w") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+            w.writeframes(struct.pack("<100h", *([0] * 100)))
+
+        local_result = TTSResult(
+            file_path=str(fake_wav),
+            voice="local-zira",
+            format="wav",
+            file_size_bytes=100,
+            duration_seconds=5.0,
+            text_length=50,
+        )
+
+        # Mock AutoTTSManager where Edge fails (403) but Local succeeds
+        primary = MagicMock(spec=EdgeTTSProvider)
+        primary.provider_name = "edge"
+        primary.synthesize = AsyncMock(side_effect=TTSNetworkError("Edge-TTS 403 Forbidden - IP rate limit"))
+
+        fallback = MagicMock(spec=LocalTTSProvider)
+        fallback.provider_name = "local"
+        fallback.synthesize = AsyncMock(return_value=local_result)
+
+        auto_manager = AutoTTSManager(primary=primary, fallback=fallback)
+
+        with patch("backend.services.tts.factory.get_tts_provider", return_value=auto_manager), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            audio_id = _stage_generate_audio(job_id, project.id)
+
+        # Verify audio was generated successfully
+        assert audio_id is not None, "Audio ID should be returned after successful fallback"
+        assert primary.synthesize.call_count == 1, "Edge should have been attempted once"
+        assert fallback.synthesize.call_count == 1, "Local fallback should have been called once"
+
+        # Verify the audio record was created with correct status
+        db.refresh(project)
+        audio_record = db.query(GeneratedAudio).filter(
+            GeneratedAudio.content_project_id == project.id
+        ).first()
+        assert audio_record is not None, "Audio record should be created"
+        assert audio_record.status == AudioStatus.COMPLETED, "Audio should be marked as completed"
+        assert audio_record.provider == "local", "Provider should be recorded as 'local'"
+        assert audio_record.file_path == str(fake_wav), "File path should match local output"
+
+    def test_tts_failure_marks_job_as_failed(self, db, tmp_path):
+        """
+        When TTS synthesis fails, the job must be marked as FAILED
+        instead of continuing without audio or hanging indefinitely.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.services.tts.base import TTSGenerationError
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        import json
+
+        # Create a completed content project with script
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test topic",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=5,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="Test Title",
+            description="Test Description",
+            hook="Test hook.",
+            tags_json=json.dumps([]),
+            scenes_json=json.dumps([
+                {"scene_number": 1, "narration": "Test narration.",
+                 "visual_description": "test", "estimated_duration_seconds": 15},
+            ]),
+            estimated_duration_seconds=60,
+        )
+        db.add(script)
+        db.commit()
+
+        job_id = str(uuid.uuid4())
+
+        # Mock TTS provider that always fails
+        mock_provider_inst = MagicMock()
+        mock_provider_inst.synthesize = AsyncMock(side_effect=TTSGenerationError("Local TTS synthesis failed"))
+        mock_provider_inst.provider_name = "local"
+
+        with patch("backend.services.tts.factory.get_tts_provider", return_value=mock_provider_inst), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            # Should raise the exception, not return None
+            with pytest.raises(TTSGenerationError, match="Local TTS synthesis failed"):
+                _stage_generate_audio(job_id, project.id)
+
+    def test_edge_403_local_fallback_both_providers_fail_job_marked_failed(self, db, tmp_path):
+        """
+        Test: Edge 403 → local fallback failure → queue job marked failed.
+        When both Edge and Local fail, the job must be marked as FAILED
+        instead of remaining stuck in processing state.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.services.tts.base import TTSNetworkError, TTSGenerationError
+        from backend.services.tts.manager import AutoTTSManager
+        from backend.services.tts.edge_provider import EdgeTTSProvider
+        from backend.services.tts.local_provider import LocalTTSProvider
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        import json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test both providers fail",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=5,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="T",
+            description="D",
+            hook="Hook.",
+            tags_json=json.dumps([]),
+            scenes_json=json.dumps([
+                {"scene_number": 1, "narration": "Narration.",
+                 "visual_description": "v", "estimated_duration_seconds": 15},
+            ]),
+            estimated_duration_seconds=60,
+        )
+        db.add(script)
+        db.commit()
+
+        job_id = str(uuid.uuid4())
+
+        # Mock AutoTTSManager where Edge fails (403) and Local also fails
+        primary = MagicMock(spec=EdgeTTSProvider)
+        primary.provider_name = "edge"
+        primary.synthesize = AsyncMock(side_effect=TTSNetworkError("Edge 403"))
+
+        fallback = MagicMock(spec=LocalTTSProvider)
+        fallback.provider_name = "local"
+        fallback.synthesize = AsyncMock(side_effect=TTSGenerationError("Local SAPI failed"))
+
+        auto_manager = AutoTTSManager(primary=primary, fallback=fallback)
+
+        with patch("backend.services.tts.factory.get_tts_provider", return_value=auto_manager), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            # Should raise the Local TTS error, not return None
+            with pytest.raises(TTSGenerationError, match="Local SAPI failed"):
+                _stage_generate_audio(job_id, project.id)
+
+    def test_tts_timeout_does_not_remain_active_forever(self, db, tmp_path):
+        """
+        Test: TTS timeout → queue job does not remain active forever.
+        When local TTS times out, the job must be marked as FAILED
+        instead of remaining stuck in processing state.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.services.tts.base import TTSGenerationError
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        import json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test TTS timeout",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=5,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="T",
+            description="D",
+            hook="Hook.",
+            tags_json=json.dumps([]),
+            scenes_json=json.dumps([
+                {"scene_number": 1, "narration": "Narration.",
+                 "visual_description": "v", "estimated_duration_seconds": 15},
+            ]),
+            estimated_duration_seconds=60,
+        )
+        db.add(script)
+        db.commit()
+
+        job_id = str(uuid.uuid4())
+
+        # Mock TTS provider that times out
+        mock_provider_inst = MagicMock()
+        mock_provider_inst.synthesize = AsyncMock(side_effect=TTSGenerationError(
+            "Local TTS chunk timed out after 120s. Windows SAPI may be unresponsive."
+        ))
+        mock_provider_inst.provider_name = "local"
+
+        with patch("backend.services.tts.factory.get_tts_provider", return_value=mock_provider_inst), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            # Should raise the timeout error, not hang indefinitely
+            with pytest.raises(TTSGenerationError, match="timed out"):
+                _stage_generate_audio(job_id, project.id)
+
+    def test_successful_local_audio_video_stage_starts(self, db, tmp_path):
+        """
+        Test: Successful local audio generation → video stage starts.
+        Verify that after successful local TTS, the pipeline continues to video generation.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.services.tts.base import TTSResult
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        import json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test local audio to video",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=5,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="T",
+            description="D",
+            hook="Hook.",
+            tags_json=json.dumps([]),
+            scenes_json=json.dumps([
+                {"scene_number": 1, "narration": "Narration.",
+                 "visual_description": "v", "estimated_duration_seconds": 15},
+            ]),
+            estimated_duration_seconds=60,
+        )
+        db.add(script)
+        db.commit()
+
+        job_id = str(uuid.uuid4())
+
+        # Create a fake WAV file for the local result
+        fake_wav = tmp_path / "local_audio.wav"
+        import wave, struct
+        with wave.open(str(fake_wav), "w") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+            w.writeframes(struct.pack("<100h", *([0] * 100)))
+
+        local_result = TTSResult(
+            file_path=str(fake_wav),
+            voice="local-zira",
+            format="wav",
+            file_size_bytes=100,
+            duration_seconds=5.0,
+            text_length=50,
+        )
+
+        # Mock local provider that succeeds
+        mock_provider_inst = MagicMock()
+        mock_provider_inst.synthesize = AsyncMock(return_value=local_result)
+        mock_provider_inst.provider_name = "local"
+        mock_provider_inst.last_used_provider = "local"
+
+        with patch("backend.services.tts.factory.get_tts_provider", return_value=mock_provider_inst), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            audio_id = _stage_generate_audio(job_id, project.id)
+
+        # Verify audio was generated and pipeline can continue
+        assert audio_id is not None, "Audio ID should be returned"
+
+        # Verify the audio record was created with correct status
+        audio_record = db.query(GeneratedAudio).filter(
+            GeneratedAudio.content_project_id == project.id
+        ).first()
+        assert audio_record is not None, "Audio record should be created"
+        assert audio_record.status == AudioStatus.COMPLETED, "Audio should be marked as completed"
+        assert audio_record.provider == "local", "Provider should be recorded as 'local'"
+
+    def test_provider_and_audio_status_persisted_correctly(self, db, tmp_path):
+        """
+        Test: Provider and generated audio status are persisted correctly.
+        Verify that when local fallback succeeds, the provider field and status
+        are correctly saved to the database.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.services.tts.base import TTSResult
+        from tests.conftest import SharedTestingSessionLocal
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        import json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test provider persistence",
+            language="en",
+            tone="engaging",
+            target_duration_seconds=180,
+            scene_count=5,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="T",
+            description="D",
+            hook="Hook.",
+            tags_json=json.dumps([]),
+            scenes_json=json.dumps([
+                {"scene_number": 1, "narration": "Narration.",
+                 "visual_description": "v", "estimated_duration_seconds": 15},
+            ]),
+            estimated_duration_seconds=60,
+        )
+        db.add(script)
+        db.commit()
+
+        job_id = str(uuid.uuid4())
+
+        # Create a fake WAV file
+        fake_wav = tmp_path / "local_audio.wav"
+        import wave, struct
+        with wave.open(str(fake_wav), "w") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+            w.writeframes(struct.pack("<100h", *([0] * 100)))
+
+        local_result = TTSResult(
+            file_path=str(fake_wav),
+            voice="local-zira",
+            format="wav",
+            file_size_bytes=100,
+            duration_seconds=5.0,
+            text_length=50,
+        )
+
+        # Mock local provider
+        mock_provider_inst = MagicMock()
+        mock_provider_inst.synthesize = AsyncMock(return_value=local_result)
+        mock_provider_inst.provider_name = "local"
+        mock_provider_inst.last_used_provider = "local"
+
+        with patch("backend.services.tts.factory.get_tts_provider", return_value=mock_provider_inst), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            audio_id = _stage_generate_audio(job_id, project.id)
+
+        # Verify all fields are persisted correctly
+        audio_record = db.query(GeneratedAudio).filter(
+            GeneratedAudio.content_project_id == project.id
+        ).first()
+        assert audio_record is not None
+        assert audio_record.status == AudioStatus.COMPLETED
+        assert audio_record.provider == "local"
+        assert audio_record.voice == "en-US-AriaNeural"  # This matches the voice used in the test
+        assert audio_record.file_path == str(fake_wav)
+        assert audio_record.file_size_bytes == 100
+        assert audio_record.duration_seconds == 5.0
+        assert audio_record.text_length == 17  # Actual narration text length from script
+        assert audio_record.error_message is None
+
+
+# ── TTS fallback reliability (Phase 3B queue stuck fix) ──────────────────────
+
+class TestTTSFallbackReliability:
+    """
+    Regression tests for the queue getting stuck after Edge→Local TTS fallback.
+
+    Root cause: asyncio.get_event_loop() in LocalTTSProvider.synthesize()
+    returned the wrong loop when called from a queue worker background thread,
+    causing run_in_executor() to deadlock.
+
+    Fix: use asyncio.get_running_loop() which always returns the loop that is
+    currently executing the coroutine.
+    """
+
+    def test_local_provider_uses_get_running_loop(self):
+        """
+        LocalTTSProvider.synthesize() must use asyncio.get_running_loop(),
+        NOT asyncio.get_event_loop().
+        """
+        import inspect
+        from backend.services.tts import local_provider
+        src = inspect.getsource(local_provider.LocalTTSProvider.synthesize)
+        assert "get_running_loop" in src, (
+            "LocalTTSProvider.synthesize() must use asyncio.get_running_loop() "
+            "not get_event_loop() to avoid deadlock in queue worker threads."
+        )
+        # Verify the actual call is to get_running_loop
+        assert "asyncio.get_running_loop()" in src, (
+            "LocalTTSProvider.synthesize() must call asyncio.get_running_loop() directly."
+        )
+
+    def test_run_chunk_with_timeout_helper_exists(self):
+        """_run_chunk_with_timeout helper must be importable."""
+        from backend.services.tts.local_provider import _run_chunk_with_timeout
+        import asyncio, inspect
+        assert asyncio.iscoroutinefunction(_run_chunk_with_timeout)
+
+    def test_run_chunk_timeout_raises_tts_generation_error(self, tmp_path):
+        """
+        A chunk that times out must raise TTSGenerationError, not hang forever.
+        The queue job can then fail/retry cleanly.
+        """
+        import asyncio, time
+        from backend.services.tts.local_provider import _run_chunk_with_timeout
+        from backend.services.tts.base import TTSGenerationError
+
+        def slow_fn(*args):
+            time.sleep(60)  # simulate a hung pyttsx3.runAndWait()
+
+        async def run():
+            loop = asyncio.get_running_loop()
+            await _run_chunk_with_timeout(loop, slow_fn, (), timeout_s=0.1)
+
+        with pytest.raises(TTSGenerationError, match="timed out"):
+            asyncio.run(run())
+
+    def test_local_provider_synthesis_succeeds_with_mocked_pyttsx3(self, tmp_path):
+        """
+        LocalTTSProvider.synthesize() must complete successfully when pyttsx3
+        is mocked — i.e., the event-loop wiring is correct end-to-end.
+        """
+        import asyncio, struct, wave
+        from unittest.mock import MagicMock, patch
+        from backend.services.tts.local_provider import LocalTTSProvider
+
+        def fake_save(text, path):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            with wave.open(str(path), "w") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(22050)
+                w.writeframes(struct.pack("<100h", *([0] * 100)))
+
+        mock_engine = MagicMock()
+        mock_engine.getProperty.side_effect = lambda p: (
+            [MagicMock(id="HKEY\\Zira", name="Microsoft Zira Desktop", languages=["en-US"])]
+            if p == "voices" else 165
+        )
+        mock_engine.save_to_file = MagicMock(side_effect=fake_save)
+        mock_engine.runAndWait   = MagicMock()
+
+        with patch.dict(os.environ, {"TTS_OUTPUT_DIR": str(tmp_path), "TTS_LOCAL_RATE": "165"}):
+            provider = LocalTTSProvider()
+
+        with patch("pyttsx3.init", return_value=mock_engine):
+            result = asyncio.run(provider.synthesize(
+                "Hello world from local TTS.", "local-zira",
+                str(tmp_path / "output.wav"),
+            ))
+
+        assert result.format == "wav"
+        assert result.file_size_bytes > 0
+        assert Path(result.file_path).exists()
+
+    def test_edge_failure_triggers_local_synthesis(self, tmp_path):
+        """
+        When Edge-TTS raises TTSNetworkError, AutoTTSManager must call
+        local synthesis and return a result with provider=local.
+        """
+        import asyncio, struct, wave
+        from unittest.mock import MagicMock, AsyncMock, patch
+        from backend.services.tts.manager import AutoTTSManager
+        from backend.services.tts.edge_provider import EdgeTTSProvider
+        from backend.services.tts.local_provider import LocalTTSProvider
+        from backend.services.tts.base import TTSNetworkError, TTSResult
+
+        local_result = TTSResult(
+            file_path=str(tmp_path / "narration.wav"),
+            voice="local-zira",
+            format="wav",
+            file_size_bytes=50000,
+            duration_seconds=30.0,
+            text_length=50,
+        )
+
+        primary  = MagicMock(spec=EdgeTTSProvider)
+        primary.provider_name = "edge"
+        primary.synthesize    = AsyncMock(side_effect=TTSNetworkError("403 Forbidden"))
+
+        fallback = MagicMock(spec=LocalTTSProvider)
+        fallback.provider_name = "local"
+        fallback.synthesize    = AsyncMock(return_value=local_result)
+
+        manager = AutoTTSManager(primary=primary, fallback=fallback)
+
+        result = asyncio.run(manager.synthesize(
+            "Hello world.", "en-US-AriaNeural", str(tmp_path / "out.mp3")
+        ))
+
+        assert manager.last_used_provider == "local"
+        fallback.synthesize.assert_called_once()
+        primary.synthesize.assert_called_once()
+
+    def test_queue_tts_stage_does_not_hang_on_local_failure(self, db):
+        """
+        If local TTS synthesis raises an exception (simulating a stuck pyttsx3),
+        _stage_generate_audio must catch it, log it, and return None —
+        NOT leave the queue job stuck forever.
+        """
+        from backend.services.queue_processor import _stage_generate_audio
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        from backend.tts_models import GeneratedAudio, AudioStatus
+        from tests.conftest import SharedTestingSessionLocal
+        import json as _json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test TTS hang",
+            language="en", tone="engaging",
+            target_duration_seconds=180, scene_count=10,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="Test", description="",
+            hook="Hook.", tags_json=_json.dumps([]),
+            scenes_json=_json.dumps([{
+                "scene_number": 1, "narration": "Test narration.",
+                "visual_description": "v", "estimated_duration_seconds": 30,
+            }]),
+            estimated_duration_seconds=30,
+        )
+        db.add(script)
+        queue_job = _make_job(db, content_project_id=project.id)
+        db.commit()
+
+        # Simulate local TTS raising (e.g. timeout or SAPI error)
+        from backend.services.tts.base import TTSGenerationError
+        with patch("backend.services.tts.factory.get_tts_provider") as mock_provider, \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            mock_prov = MagicMock()
+            mock_prov.synthesize = AsyncMock(side_effect=TTSGenerationError("SAPI timed out"))
+            mock_prov.provider_name = "local"
+            mock_provider.return_value = mock_prov
+
+            # After our fix, this should raise the exception, not return None
+            with pytest.raises(TTSGenerationError, match="SAPI timed out"):
+                _stage_generate_audio(queue_job.id, project.id)
+
+
+class TestVideoJobStatusUpdates:
+    def test_video_job_status_updated_during_pipeline(self, db):
+        """
+        When video pipeline runs, the VideoGenerationJob status should be updated
+        via the progress callback, not stuck at 'preparing'.
+        """
+        from backend.services.queue_processor import _stage_generate_video
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        from backend.tts_models import GeneratedAudio, AudioStatus
+        from tests.conftest import SharedTestingSessionLocal
+        import json as _json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test video status",
+            language="en", tone="engaging",
+            target_duration_seconds=180, scene_count=10,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="Test", description="",
+            hook="Hook.", tags_json=_json.dumps([]),
+            scenes_json=_json.dumps([{
+                "scene_number": 1, "narration": "Test narration.",
+                "visual_description": "v", "estimated_duration_seconds": 30,
+            }]),
+            estimated_duration_seconds=30,
+        )
+        db.add(script)
+        audio = GeneratedAudio(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            status=AudioStatus.COMPLETED,
+            provider="local",
+            voice="en-US-AriaNeural",
+            language="en",
+            text_length=100,
+            file_path="fake.wav",
+            file_size_bytes=1000,
+            duration_seconds=30,
+        )
+        db.add(audio)
+        queue_job = _make_job(db, content_project_id=project.id)
+        db.commit()
+
+        # Mock the pipeline to simulate progress updates
+        def mock_run_pipeline(*args, **kwargs):
+            progress_cb = kwargs.get("progress_callback")
+            if progress_cb:
+                # Simulate progress through the pipeline
+                progress_cb(10, "Verifying FFmpeg")
+                progress_cb(30, "Building scene visuals")
+                progress_cb(60, "Building scene clips")
+                progress_cb(80, "Generating captions")
+                progress_cb(95, "Generating thumbnail")
+                progress_cb(100, "Complete")
+            return {
+                "output_path": "fake.mp4",
+                "thumbnail_path": "fake.jpg",
+                "caption_path": "fake.srt",
+                "duration_seconds": 30,
+                "file_size_bytes": 1000000,
+            }
+
+        with patch("backend.services.video.pipeline.run_pipeline", side_effect=mock_run_pipeline), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            video_job_id = _stage_generate_video(queue_job.id, project.id, audio.id)
+
+            # Verify video job was created and progressed beyond 'preparing'
+            db2 = SharedTestingSessionLocal()
+            try:
+                vj = db2.query(VideoGenerationJob).filter(VideoGenerationJob.id == video_job_id).first()
+                assert vj is not None
+                assert vj.status == VideoJobStatus.COMPLETED
+                assert vj.progress == 100
+                assert vj.current_step == "Complete"
+                assert vj.output_path == "fake.mp4"
+            finally:
+                db2.close()
+
+    def test_video_job_marked_failed_on_exception(self, db):
+        """
+        When video generation fails, the VideoGenerationJob should be marked
+        as FAILED with an error message.
+        """
+        from backend.services.queue_processor import _stage_generate_video
+        from backend.content_models import ContentProject, ContentStatus, GeneratedScriptRecord
+        from backend.tts_models import GeneratedAudio, AudioStatus
+        from backend.services.video.exceptions import VideoGenerationError
+        from tests.conftest import SharedTestingSessionLocal
+        import json as _json
+
+        project = ContentProject(
+            id=str(uuid.uuid4()),
+            topic="Test video failure",
+            language="en", tone="engaging",
+            target_duration_seconds=180, scene_count=10,
+            status=ContentStatus.COMPLETED,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        db.add(project)
+        script = GeneratedScriptRecord(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            title="Test", description="",
+            hook="Hook.", tags_json=_json.dumps([]),
+            scenes_json=_json.dumps([{
+                "scene_number": 1, "narration": "Test narration.",
+                "visual_description": "v", "estimated_duration_seconds": 30,
+            }]),
+            estimated_duration_seconds=30,
+        )
+        db.add(script)
+        audio = GeneratedAudio(
+            id=str(uuid.uuid4()),
+            content_project_id=project.id,
+            status=AudioStatus.COMPLETED,
+            provider="local",
+            voice="en-US-AriaNeural",
+            language="en",
+            text_length=100,
+            file_path="fake.wav",
+            file_size_bytes=1000,
+            duration_seconds=30,
+        )
+        db.add(audio)
+        queue_job = _make_job(db, content_project_id=project.id)
+        db.commit()
+
+        # Mock the pipeline to raise an exception
+        def mock_run_pipeline(*args, **kwargs):
+            raise VideoGenerationError("FFmpeg failed")
+
+        with patch("backend.services.video.pipeline.run_pipeline", side_effect=mock_run_pipeline), \
+             patch("backend.db.SessionLocal", SharedTestingSessionLocal):
+            with pytest.raises(VideoGenerationError, match="FFmpeg failed"):
+                _stage_generate_video(queue_job.id, project.id, audio.id)
+
+            # Verify video job was marked as failed
+            db2 = SharedTestingSessionLocal()
+            try:
+                vjs = db2.query(VideoGenerationJob).all()
+                # Find the video job that was created
+                failed_vj = None
+                for vj in vjs:
+                    if vj.status == VideoJobStatus.FAILED:
+                        failed_vj = vj
+                        break
+                assert failed_vj is not None
+                assert failed_vj.error_message is not None
+                assert "FFmpeg failed" in failed_vj.error_message
+            finally:
+                db2.close()

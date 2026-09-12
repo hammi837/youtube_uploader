@@ -505,6 +505,29 @@ class TestLocalTTSProvider:
             "Each chunk must use a fresh engine to avoid Windows SAPI runAndWait() hangs."
         )
 
+    # Timeout test: local synthesis timeout configuration
+    def test_local_synthesis_timeout_configurable(self, tmp_path):
+        """
+        LOCAL_TTS_CHUNK_TIMEOUT_S environment variable must be respected.
+        Default is 120s per chunk.
+        """
+        from backend.services.tts.local_provider import LocalTTSProvider, _DEFAULT_CHUNK_TIMEOUT
+
+        # Test default timeout
+        with patch.dict(os.environ, {"TTS_OUTPUT_DIR": str(tmp_path),
+                                   "TTS_LOCAL_RATE": "165",
+                                   "TTS_MAX_TEXT_LENGTH": "5000"}):
+            provider = LocalTTSProvider()
+            assert provider._chunk_timeout == _DEFAULT_CHUNK_TIMEOUT
+
+        # Test custom timeout
+        with patch.dict(os.environ, {"TTS_OUTPUT_DIR": str(tmp_path),
+                                   "TTS_LOCAL_RATE": "165",
+                                   "TTS_MAX_TEXT_LENGTH": "5000",
+                                   "LOCAL_TTS_CHUNK_TIMEOUT_S": "30"}):
+            provider = LocalTTSProvider()
+            assert provider._chunk_timeout == 30.0
+
     # K (spec): audio file created on disk AND database record is correct
     def test_audio_file_created_and_result_correct(self, tmp_path):
         """
