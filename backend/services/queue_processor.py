@@ -414,19 +414,38 @@ def _stage_generate_audio(job_id: str, content_project_id: str) -> Optional[str]
         _update_job(job_id, stage="Synthesizing narration…", progress=18)
 
         def _do_tts():
+            from backend.services.queue_services import log_job as _log
             provider = get_tts_provider()
+            provider_name = provider.provider_name if hasattr(provider, 'provider_name') else 'unknown'
+            _log(job_id, f"TTS provider selected: {provider_name}", stage="tts")
+            _log(job_id, "TTS synthesis starting…", stage="tts")
+
+            # Run the async synthesize() in a fresh dedicated event loop.
+            # The queue worker runs in a plain thread (not inside asyncio.run),
+            # so there is no running loop. We create one, run the coroutine,
+            # and close it cleanly. Do NOT call asyncio.set_event_loop() as
+            # that modifies global state and can interfere with other threads.
             loop = asyncio.new_event_loop()
             try:
+                _log(job_id, f"TTS event loop created, calling synthesize() with provider={provider_name}", stage="tts")
                 result = loop.run_until_complete(
                     provider.synthesize(narration_text, voice, output_path)
                 )
+                _log(job_id, f"TTS synthesize() returned successfully", stage="tts")
             finally:
+                try:
+                    loop.run_until_complete(loop.shutdown_asyncgens())
+                except Exception:
+                    pass
                 loop.close()
+                _log(job_id, "TTS event loop closed", stage="tts")
+
             used_provider = (
                 provider.last_used_provider
                 if hasattr(provider, "last_used_provider")
                 else provider.provider_name
             )
+            _log(job_id, f"TTS synthesis complete: provider={used_provider} file={Path(result.file_path).name} size={result.file_size_bytes} bytes", stage="tts")
             return result, used_provider
 
         result, used_provider = _retry_call(
@@ -455,10 +474,10 @@ def _stage_generate_audio(job_id: str, content_project_id: str) -> Optional[str]
         return audio_id
 
     except Exception as exc:
-        logger.warning("TTS stage failed: %s — continuing without audio.", exc)
-        return None
-    finally:
-        db.close()
+        logger.error("TTS stage failed: %s — job will be marked as failed.", exc)
+        # Re-raise to let _retry_call handle the failure with proper retry logic
+        # This ensures the job is marked as failed instead of continuing without audio
+        raise
 
 
 def _stage_generate_video(
