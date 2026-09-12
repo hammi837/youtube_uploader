@@ -447,18 +447,23 @@ function QueueJobCard({
   onOpenLogs: (id: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const startMs = useRef<number | null>(null);
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
     if (isActive(job.status)) {
-      if (!startMs.current) startMs.current = Date.now();
-      const t = setInterval(() => setElapsed(Date.now() - startMs.current!), 1000);
+      // Use persisted started_at timestamp if available
+      const startTime = job.started_at ? new Date(job.started_at).getTime() : Date.now();
+      const t = setInterval(() => setElapsed(Date.now() - startTime), 1000);
       return () => clearInterval(t);
+    } else if (job.completed_at && job.started_at) {
+      // For completed jobs, use the actual duration
+      const completedTime = new Date(job.completed_at).getTime();
+      const startTime = new Date(job.started_at).getTime();
+      setElapsed(completedTime - startTime);
     } else {
-      startMs.current = null;
+      setElapsed(0);
     }
-  }, [job.status]);
+  }, [job.status, job.started_at, job.completed_at]);
 
   async function act(fn: () => Promise<unknown>, confirm_msg?: string) {
     if (confirm_msg && !window.confirm(confirm_msg)) return;

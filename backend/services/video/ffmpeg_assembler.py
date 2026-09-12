@@ -49,10 +49,10 @@ def _ffprobe() -> str:
 def _run(cmd: list[str], timeout: int = 600, label: str = "ffmpeg") -> str:
     """
     Run an FFmpeg/FFprobe command, return stdout.
-    Raises FFmpegError with safe truncated stderr on failure.
+    Raises FFmpegError with complete command, return code, and full stderr on failure.
     """
     from backend.services.video.exceptions import FFmpegError
-    logger.debug("Running %s: %s", label, " ".join(cmd[:8]) + " ...")
+    logger.info("Running %s: %s", label, " ".join(cmd))
     t0 = time.perf_counter()
     result = subprocess.run(
         cmd,
@@ -62,12 +62,23 @@ def _run(cmd: list[str], timeout: int = 600, label: str = "ffmpeg") -> str:
     )
     elapsed = time.perf_counter() - t0
     if result.returncode != 0:
-        stderr_safe = result.stderr[-1000:] if result.stderr else "(no output)"
+        # Log complete error information for debugging
+        logger.error(
+            "%s failed (rc=%d) after %.1fs\n"
+            "Command: %s\n"
+            "Stdout: %s\n"
+            "Stderr: %s",
+            label, result.returncode, elapsed,
+            " ".join(cmd),
+            result.stdout or "(empty)",
+            result.stderr or "(empty)",
+        )
         raise FFmpegError(
             f"{label} failed (rc={result.returncode}) after {elapsed:.1f}s. "
-            f"stderr: {stderr_safe}"
+            f"Command: {' '.join(cmd)}. "
+            f"Stderr: {result.stderr or '(empty)'}"
         )
-    logger.debug("%s completed in %.1fs", label, elapsed)
+    logger.info("%s completed in %.1fs", label, elapsed)
     return result.stdout
 
 
@@ -275,6 +286,16 @@ def mix_audio(
 def _merge_video_audio(video_path: Path, audio_path: Path, output_path: Path) -> Path:
     """Merge a silent video with a narration audio track."""
     ff = _ffmpeg()
+
+    # Get audio sample rate to determine appropriate bitrate
+    audio_sample_rate = _get_audio_sample_rate(str(audio_path))
+    if audio_sample_rate >= 44100:
+        audio_bitrate = "192k"
+    elif audio_sample_rate >= 22050:
+        audio_bitrate = "128k"
+    else:
+        audio_bitrate = "64k"
+
     cmd = [
         ff, "-y",
         "-i", str(video_path),
@@ -282,7 +303,7 @@ def _merge_video_audio(video_path: Path, audio_path: Path, output_path: Path) ->
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "aac", "-b:a", audio_bitrate,
         "-shortest",
         str(output_path),
     ]
@@ -298,6 +319,16 @@ def _mix_music(
     video_duration: float,
 ) -> Path:
     ff = _ffmpeg()
+
+    # Get audio sample rate to determine appropriate bitrate
+    audio_sample_rate = _get_audio_sample_rate(str(video_with_narration))
+    if audio_sample_rate >= 44100:
+        audio_bitrate = "192k"
+    elif audio_sample_rate >= 22050:
+        audio_bitrate = "128k"
+    else:
+        audio_bitrate = "64k"
+
     audio_filter = (
         f"[1:a]aloop=loop=-1:size=2e+09,atrim=duration={video_duration:.3f},"
         f"volume={music_volume:.3f}[music];"
@@ -311,7 +342,7 @@ def _mix_music(
         "-map", "0:v:0",
         "-map", "[aout]",
         "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "192k",
+        "-c:a", "aac", "-b:a", audio_bitrate,
         "-shortest",
         str(output_path),
     ]
@@ -355,6 +386,7 @@ def burn_captions(
         f"Alignment=2'"                # bottom-center
     )
 
+    # Note: burn_captions uses -c:a copy, so bitrate is preserved from input
     cmd = [
         ff, "-y",
         "-i", str(video_path),
@@ -386,6 +418,22 @@ def final_encode(
     Re-encodes to ensure consistent output format.
     """
     ff = _ffmpeg()
+
+    # Get audio sample rate to determine appropriate bitrate
+    audio_sample_rate = _get_audio_sample_rate(str(input_path))
+    logger.info("Audio sample rate: %d Hz", audio_sample_rate)
+
+    # Calculate appropriate audio bitrate based on sample rate
+    # AAC max bitrate: ~320k for 48kHz, ~160k for 22.05kHz, ~80k for 11.025kHz
+    if audio_sample_rate >= 44100:
+        audio_bitrate = "192k"
+    elif audio_sample_rate >= 22050:
+        audio_bitrate = "128k"
+    else:
+        audio_bitrate = "64k"
+
+    logger.info("Using audio bitrate: %s for sample rate %d Hz", audio_bitrate, audio_sample_rate)
+
     cmd = [
         ff, "-y",
         "-i", str(input_path),
@@ -396,7 +444,7 @@ def final_encode(
         "-crf", str(crf),
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
-        "-b:a", "192k",
+        "-b:a", audio_bitrate,
         "-movflags", "+faststart",
         str(output_path),
     ]
@@ -423,6 +471,26 @@ def _get_duration(file_path: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _get_audio_sample_rate(file_path: str) -> int:
+    """Return audio sample rate in Hz using ffprobe. Defaults to 44100 if unavailable."""
+    try:
+        fp = _ffprobe()
+        result = subprocess.run(
+            [fp, "-v", "quiet", "-print_format", "json",
+             "-show_streams", file_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        data = json.loads(result.stdout)
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "audio":
+                sr = stream.get("sample_rate")
+                if sr:
+                    return int(sr)
+    except Exception:
+        pass
+    return 44100  # Default to standard CD quality
 
 
 def probe_video(file_path: str | Path) -> dict:
