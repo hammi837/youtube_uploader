@@ -51,12 +51,26 @@ DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024   # 8 MB
 MIN_CHUNK_SIZE     = 256 * 1024        # 256 KB
 
 
+UPLOAD_TIMEOUT = int(os.environ.get("YOUTUBE_UPLOAD_TIMEOUT_SECONDS", "900"))
+CHUNK_TIMEOUT = int(os.environ.get("YOUTUBE_UPLOAD_CHUNK_TIMEOUT_SECONDS", "120"))
+
 # ── Service builder ────────────────────────────────────────────────────────────
 
 def build_service():
     """Return an authenticated YouTube API service client."""
+    import socket
+    socket.setdefaulttimeout(CHUNK_TIMEOUT)
     creds = get_credentials()
-    return build(API_SERVICE_NAME, API_VERSION, credentials=creds)
+    
+    import google_auth_httplib2
+    from googleapiclient.http import build_http
+    http = build_http()
+    http.timeout = CHUNK_TIMEOUT
+    # Ensure 308 (Resume Incomplete) is NEVER treated as a redirect by httplib2
+    http.redirect_codes = http.redirect_codes - {308}
+    authed_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+    
+    return build(API_SERVICE_NAME, API_VERSION, http=authed_http)
 
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
@@ -315,10 +329,14 @@ def _resumable_upload_tqdm(request, file_size: int) -> str:
     response = None
     error    = None
     retry    = 0
+    start_time = time.time()
 
     with tqdm(total=file_size, unit="B", unit_scale=True, desc="Progress") as pbar:
         last_progress = 0
         while response is None:
+            if time.time() - start_time > UPLOAD_TIMEOUT:
+                raise TimeoutError(f"Upload timed out after {UPLOAD_TIMEOUT} seconds")
+                
             try:
                 status, response = request.next_chunk()
                 if status:
@@ -347,6 +365,45 @@ def _resumable_upload_tqdm(request, file_size: int) -> str:
     return response["id"]
 
 
+def _call_next_chunk_with_timeout(request, timeout: int):
+    """
+    Call request.next_chunk() in a daemon thread and raise IOError if it
+    doesn't complete within `timeout` seconds.
+
+    httplib2 ignores socket.setdefaulttimeout() for persistent connections.
+    This is the only reliable way to enforce per-chunk timeouts without
+    modifying google-api-python-client internals.
+    """
+    import threading
+
+    result = [None]   # (status, response) on success
+    error  = [None]   # exception on failure
+
+    def _worker():
+        try:
+            result[0] = request.next_chunk(num_retries=0)
+        except Exception as exc:  # noqa: BLE001
+            error[0] = exc
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout)
+
+    if t.is_alive():
+        # Thread is still blocked — the socket is hung. We can't kill the
+        # thread in Python, but we can abandon it (it's a daemon so it won't
+        # prevent process exit) and treat this as a transient network error.
+        raise IOError(
+            f"next_chunk() blocked for more than {timeout}s — "
+            "connection appears stalled. Will retry."
+        )
+
+    if error[0] is not None:
+        raise error[0]
+
+    return result[0]
+
+
 def _resumable_upload_headless(
     request,
     file_size: int,
@@ -356,10 +413,14 @@ def _resumable_upload_headless(
     response = None
     error    = None
     retry    = 0
+    start_time = time.time()
 
     while response is None:
+        if time.time() - start_time > UPLOAD_TIMEOUT:
+            raise TimeoutError(f"Upload timed out after {UPLOAD_TIMEOUT} seconds")
+
         try:
-            status, response = request.next_chunk()
+            status, response = _call_next_chunk_with_timeout(request, CHUNK_TIMEOUT)
             if status:
                 progress_callback(int(status.resumable_progress), file_size)
             if response is not None:
@@ -374,9 +435,11 @@ def _resumable_upload_headless(
 
         if error:
             retry += 1
+            logger.warning("YouTube chunk upload attempt %d/%d encountered retriable error: %s", retry, MAX_RETRIES, error)
             if retry > MAX_RETRIES:
                 raise RuntimeError(f"Max retries exceeded. Last error: {error}")
             time.sleep(min(2 ** retry, 64))
             error = None
 
     return response["id"]
+
