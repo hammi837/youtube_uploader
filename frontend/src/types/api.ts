@@ -220,7 +220,8 @@ export type QueueJobStatus =
   | 'completed'
   | 'failed'
   | 'cancelled'
-  | 'paused';
+  | 'paused'
+  | 'awaiting_auth';
 
 export interface QueueJob {
   id: string;

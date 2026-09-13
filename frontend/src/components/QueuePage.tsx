@@ -40,6 +40,7 @@ const STATUS_LABEL: Record<string, string> = {
   failed:            '❌ Failed',
   cancelled:         '🚫 Cancelled',
   paused:            '⏸ Paused',
+  awaiting_auth:     '🔑 Auth Required',
 };
 
 const STATUS_COLOR: Record<string, string> = {
@@ -54,6 +55,7 @@ const STATUS_COLOR: Record<string, string> = {
   failed:            'var(--color-error)',
   cancelled:         'var(--color-muted)',
   paused:            'var(--color-warning)',
+  awaiting_auth:     'var(--color-warning)',
 };
 
 const ACTIVE_STATUSES = new Set([
@@ -450,20 +452,30 @@ function QueueJobCard({
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
+    const MAX_REALISTIC_MS = 12 * 3600 * 1000; // 12 hours
+
+    function clampedDiff(endMs: number, startMs: number): number {
+      const diff = endMs - startMs;
+      // Clamp negative values (clock skew or inconsistent timestamps) and unrealistically long values
+      if (diff < 0 || diff > MAX_REALISTIC_MS) return 0;
+      return diff;
+    }
+
     if (isActive(job.status)) {
       // Use persisted started_at timestamp if available
       const startTime = job.started_at ? new Date(job.started_at).getTime() : Date.now();
-      const t = setInterval(() => setElapsed(Date.now() - startTime), 1000);
+      const t = setInterval(() => setElapsed(clampedDiff(Date.now(), startTime)), 1000);
       return () => clearInterval(t);
     } else if (job.completed_at && job.started_at) {
-      // For completed jobs, use the actual duration
-      const completedTime = new Date(job.completed_at).getTime();
-      const startTime = new Date(job.started_at).getTime();
-      setElapsed(completedTime - startTime);
+      setElapsed(clampedDiff(new Date(job.completed_at).getTime(), new Date(job.started_at).getTime()));
+    } else if (job.failed_at && job.started_at) {
+      setElapsed(clampedDiff(new Date(job.failed_at).getTime(), new Date(job.started_at).getTime()));
+    } else if (job.cancelled_at && job.started_at) {
+      setElapsed(clampedDiff(new Date(job.cancelled_at).getTime(), new Date(job.started_at).getTime()));
     } else {
       setElapsed(0);
     }
-  }, [job.status, job.started_at, job.completed_at]);
+  }, [job.status, job.started_at, job.completed_at, job.failed_at, job.cancelled_at]);
 
   async function act(fn: () => Promise<unknown>, confirm_msg?: string) {
     if (confirm_msg && !window.confirm(confirm_msg)) return;
@@ -577,13 +589,18 @@ function QueueJobCard({
           <button className="btn btn--ghost btn--sm" disabled={busy}
             onClick={() => act(() => retryQueueJob(job.id))}>↺ Retry</button>
         )}
+        {job.status === 'awaiting_auth' && (
+          <button className="btn btn--ghost btn--sm" disabled={busy}
+            title="Re-authenticate via the Auth page, then click Retry Upload"
+            onClick={() => act(() => retryQueueJob(job.id))}>🔑 Retry Upload</button>
+        )}
         {job.status === 'queued' && (
           <button className="btn btn--ghost btn--sm" disabled={busy}
             onClick={() => act(() => cancelQueueJob(job.id), 'Cancel this job?')}>
             🚫 Cancel
           </button>
         )}
-        {['completed','cancelled','failed'].includes(job.status) && (
+        {['completed','cancelled','failed','awaiting_auth'].includes(job.status) && (
           <button className="btn btn--danger btn--sm" disabled={busy}
             onClick={() => act(() => deleteQueueJob(job.id), 'Delete this job record?')}>
             🗑 Delete

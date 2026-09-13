@@ -378,21 +378,61 @@ def _run_pipeline_sync(
         logger.info("[video_pipeline %s] Captions disabled", job_id)
         step(85, "Captions disabled.")
 
-    # ── 10. Burn captions ──────────────────────────────────────────────────
+    # ── 10. Burn captions ──────────────────────────────────────────────────────
     step(86, "Burning captions into video...")
     captioned_path = temp_dir / "captioned.mp4"
+    captions_fallback_enabled = os.getenv("CAPTIONS_FALLBACK_ENABLED", "true").lower() == "true"
+    audio_mixed_duration = _get_duration(str(audio_mixed_path))
+
     if captions_enabled and caption_srt_path.exists() and caption_srt_path.stat().st_size > 0:
+        logger.info(
+            "[video_pipeline %s] Caption burn started — srt=%s video=%s fallback_allowed=%s",
+            job_id, caption_srt_path.name, audio_mixed_path.name, captions_fallback_enabled,
+        )
         try:
-            logger.info("[video_pipeline %s] Burning captions into video", job_id)
-            burn_captions(audio_mixed_path, caption_srt_path, captioned_path, width, height)
-            logger.info("[video_pipeline %s] Captions burned: %s", job_id, captioned_path.name)
+            logger.info(
+                "[video_pipeline %s] Caption burn command starting — "
+                "video_duration=%.1fs srt_size=%d bytes",
+                job_id, audio_mixed_duration, caption_srt_path.stat().st_size,
+            )
+            burn_captions(
+                audio_mixed_path, caption_srt_path, captioned_path, width, height,
+                video_duration=audio_mixed_duration,
+            )
+            logger.info(
+                "[video_pipeline %s] Caption burn completed — output=%s size=%.1f MB",
+                job_id, captioned_path.name, captioned_path.stat().st_size / 1024 / 1024,
+            )
             step(88, "Captions burned.")
         except Exception as exc:
-            logger.warning("[video_pipeline %s] Caption burn failed (%s) — using video without captions.", job_id, exc)
-            import shutil
-            shutil.copy2(str(audio_mixed_path), str(captioned_path))
+            logger.error(
+                "[video_pipeline %s] Caption burn failed: %s",
+                job_id, exc,
+            )
+            if captions_fallback_enabled:
+                logger.warning(
+                    "[video_pipeline %s] Fallback decision: CAPTIONS_FALLBACK_ENABLED=true "
+                    "— copying uncaptioned video. Set CAPTIONS_FALLBACK_ENABLED=false "
+                    "to enforce captions and fail instead.",
+                    job_id,
+                )
+                import shutil
+                shutil.copy2(str(audio_mixed_path), str(captioned_path))
+                step(88, "Caption burn failed — using video without captions (fallback).")
+            else:
+                logger.error(
+                    "[video_pipeline %s] Fallback decision: CAPTIONS_FALLBACK_ENABLED=false "
+                    "— re-raising caption burn failure.",
+                    job_id,
+                )
+                raise
     else:
-        logger.info("[video_pipeline %s] Skipping caption burn (no captions or empty file)", job_id)
+        logger.info(
+            "[video_pipeline %s] Skipping caption burn (no captions or empty file) — "
+            "captions_enabled=%s srt_exists=%s",
+            job_id, captions_enabled,
+            caption_srt_path.exists() if caption_srt_path else False,
+        )
         import shutil
         shutil.copy2(str(audio_mixed_path), str(captioned_path))
         step(88, "Captions skipped.")
