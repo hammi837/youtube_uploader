@@ -40,22 +40,24 @@ class QueueStatus:
     FAILED             = "failed"
     CANCELLED          = "cancelled"
     PAUSED             = "paused"
+    AWAITING_AUTH      = "awaiting_auth"  # YouTube token invalid — needs reauthorization
 
     # All valid values
     ALL = {
         QUEUED, RESEARCHING, GENERATING_SCRIPT, GENERATING_AUDIO,
         GENERATING_VIDEO, UPLOADING, SCHEDULED, COMPLETED, FAILED,
-        CANCELLED, PAUSED,
+        CANCELLED, PAUSED, AWAITING_AUTH,
     }
 
     # Terminal states — job will not continue processing
-    TERMINAL = {COMPLETED, FAILED, CANCELLED}
+    TERMINAL = {COMPLETED, FAILED, CANCELLED, AWAITING_AUTH}
 
     # States that mean "actively being processed" (not yet terminal, not idle)
     ACTIVE = {
         RESEARCHING, GENERATING_SCRIPT, GENERATING_AUDIO,
         GENERATING_VIDEO, UPLOADING,
     }
+
 
 
 # ── SQLAlchemy model ──────────────────────────────────────────────────────────

@@ -286,22 +286,31 @@ def retry_queue_job(
     db: Session = Depends(get_db),
 ) -> QueueJobResponse:
     """
-    Reset a failed or cancelled job back to queued for retry.
-    Also resets retry_count so it gets max_retries attempts again.
+    Reset a failed, cancelled, or awaiting_auth job back to queued for retry.
+    Resets retry_count so it gets max_retries attempts again.
+    Clears all historical timestamps and error state for a clean slate.
+    For awaiting_auth: user must have re-authenticated before retrying.
     """
     job = _get_job_or_404(job_id, db)
 
-    if job.status not in (QueueStatus.FAILED, QueueStatus.CANCELLED):
+    RETRYABLE = (QueueStatus.FAILED, QueueStatus.CANCELLED, QueueStatus.AWAITING_AUTH)
+    if job.status not in RETRYABLE:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Only failed or cancelled jobs can be retried. Current status: {job.status}",
+            detail=f"Only failed, cancelled, or awaiting_auth jobs can be retried. Current status: {job.status}",
         )
 
-    job.status        = QueueStatus.QUEUED
-    job.current_stage = "Requeued for retry"
-    job.progress      = 0
-    job.retry_count   = 0
-    job.error_message = None
+    job.status          = QueueStatus.QUEUED
+    job.current_stage   = "Requeued for retry"
+    job.progress        = 0
+    job.retry_count     = 0
+    job.error_message   = None
+    job.last_error_type = None
+    # Clear historical timestamps so elapsed time is fresh on next run
+    job.started_at      = None
+    job.failed_at       = None
+    job.cancelled_at    = None
+    job.completed_at    = None
     db.commit()
     db.refresh(job)
 
