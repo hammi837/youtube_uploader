@@ -88,3 +88,13 @@ htmlcov/
 
 # ── Local scratch / one-off scripts ──────────────────────────────────────────
 test_2c_real.py
+patch_tests.py
+patch_tests2.py
+patch_tests3.py
+tests/test_queue_3c.py
+
+# ── Temporary/invalid token files ────────────────────────────────────────────
+token.json.invalid
+
+# ── Dummy/test media files ────────────────────────────────────────────────────
+dummy.mp4
