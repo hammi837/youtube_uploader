@@ -415,12 +415,12 @@ class TestQueueStatusConstants:
         expected = {
             "queued", "researching", "generating_script", "generating_audio",
             "generating_video", "uploading", "scheduled", "completed",
-            "failed", "cancelled", "paused",
+            "failed", "cancelled", "paused", "awaiting_auth",
         }
         assert QueueStatus.ALL == expected
 
     def test_terminal_set(self):
-        assert QueueStatus.TERMINAL == {"completed", "failed", "cancelled"}
+        assert QueueStatus.TERMINAL == {"completed", "failed", "cancelled", "awaiting_auth"}
 
     def test_active_set(self):
         assert QueueStatus.ACTIVE == {
