@@ -27,7 +27,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Event, Thread
+from threading import Event, Lock, Thread
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # These are module-level so they survive across requests within one process.
 
 _worker_thread: Optional[Thread] = None
+_start_lock = Lock()
 _stop_event  = Event()   # set to request graceful stop of the worker loop
 _queue_paused: bool = False
 _current_job_id: Optional[str] = None
@@ -46,23 +47,25 @@ _current_job_id: Optional[str] = None
 def start_worker() -> bool:
     """
     Start the background queue worker thread if not already running.
+    Thread-safe: guarded by _start_lock to prevent race conditions.
     Returns True if started, False if already running.
     """
     global _worker_thread, _stop_event
 
-    if _worker_thread is not None and _worker_thread.is_alive():
-        logger.info("Queue worker already running.")
-        return False
+    with _start_lock:
+        if _worker_thread is not None and _worker_thread.is_alive():
+            logger.info("Queue worker already running.")
+            return False
 
-    _stop_event.clear()
-    _worker_thread = Thread(
-        target=_worker_loop,
-        name="queue-worker",
-        daemon=True,
-    )
-    _worker_thread.start()
-    logger.info("Queue worker started.")
-    return True
+        _stop_event.clear()
+        _worker_thread = Thread(
+            target=_worker_loop,
+            name="queue-worker",
+            daemon=True,
+        )
+        _worker_thread.start()
+        logger.info("Queue worker started.")
+        return True
 
 
 def stop_worker() -> None:
@@ -140,6 +143,18 @@ def _claim_next_job() -> Optional[str]:
     db = SessionLocal()
     try:
         now = datetime.now(timezone.utc)
+
+        # Strict single-job execution check:
+        # Never claim a new job if any job is currently active
+        active_count = (
+            db.query(ContentQueueJob)
+            .filter(ContentQueueJob.status.in_(list(QueueStatus.ACTIVE)))
+            .count()
+        )
+        if active_count > 0:
+            logger.debug("Active job already in progress (%d active). Skipping claim.", active_count)
+            return None
+
         job = (
             db.query(ContentQueueJob)
             .filter(
@@ -193,14 +208,97 @@ def _run_full_pipeline(job_id: str) -> None:
     """
     Orchestrate all pipeline stages for one job.
     Each stage updates the job status, current_stage, and progress in the DB.
+
+    Upload-only retry path:
+      If the job already has a video_job_id pointing to a completed VideoGenerationJob
+      with an existing output file, all research/TTS/video stages are skipped and
+      the pipeline resumes directly at the upload stage.  This is the correct behavior
+      after a YouTube authentication failure — no regeneration of content is needed.
     """
-    from backend.queue_models import QueueStatus
+    from backend.db import SessionLocal
+    from backend.queue_models import ContentQueueJob, QueueStatus
+    from backend.video_generation_models import VideoGenerationJob, VideoJobStatus
     from backend.services.queue_services import (
         log_job, check_disk_space, check_upload_limit,
         get_min_free_disk_gb, increment_uploads_today,
     )
+    from backend.services.video.exceptions import YouTubeAuthError
 
     log_job(job_id, "Pipeline started.", stage="init")
+
+    # ── Check for upload-only retry path ──────────────────────────────────────
+    # If a completed video already exists, skip all generation stages.
+    db_check = SessionLocal()
+    try:
+        qj = db_check.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+        existing_video_job_id = qj.video_job_id if qj else None
+        content_project_id_existing = qj.content_project_id if qj else None
+    finally:
+        db_check.close()
+
+    if existing_video_job_id:
+        db_vj = SessionLocal()
+        try:
+            vj_existing = db_vj.query(VideoGenerationJob).filter(
+                VideoGenerationJob.id == existing_video_job_id,
+                VideoGenerationJob.status == VideoJobStatus.COMPLETED,
+            ).first()
+            has_completed_video = (
+                vj_existing is not None
+                and vj_existing.output_path
+                and Path(vj_existing.output_path).exists()
+            )
+        finally:
+            db_vj.close()
+
+        if has_completed_video:
+            log_job(
+                job_id,
+                f"Upload-only retry — existing completed video reused: "
+                f"video_job_id={existing_video_job_id} "
+                f"output={Path(vj_existing.output_path).name}",
+                stage="init",
+            )
+            logger.info(
+                "[queue_pipeline %s] Upload-only retry path: skipping research/TTS/video. "
+                "Reusing video_job_id=%s output=%s",
+                job_id, existing_video_job_id, Path(vj_existing.output_path).name,
+            )
+
+            # Go directly to upload
+            upload_ok, uploads_today, upload_limit = check_upload_limit()
+            if not upload_ok:
+                msg = (
+                    f"Daily upload limit reached ({uploads_today}/{upload_limit}). "
+                    "Job will retry when the limit resets (UTC midnight)."
+                )
+                log_job(job_id, msg, level="warning", stage="youtube")
+                raise RuntimeError(msg)
+
+            _update_job(
+                job_id,
+                status=QueueStatus.UPLOADING,
+                stage="Uploading to YouTube (upload-only retry)…",
+                progress=87,
+            )
+            log_job(job_id, "YouTube upload started (upload-only retry).", stage="youtube")
+            try:
+                _stage_youtube(job_id, existing_video_job_id)
+            except YouTubeAuthError as auth_exc:
+                _handle_youtube_auth_error(job_id, auth_exc)
+                return
+            increment_uploads_today()
+            log_job(job_id, "YouTube upload complete (upload-only retry).", stage="youtube")
+
+            _update_job(
+                job_id,
+                status=QueueStatus.COMPLETED,
+                stage="Complete",
+                progress=100,
+                completed_at=datetime.now(timezone.utc),
+            )
+            log_job(job_id, "Job completed successfully (upload-only retry).", stage="complete")
+            return
 
     # ── Disk-space check ───────────────────────────────────────────────────
     disk_ok, free_gb = check_disk_space()
@@ -258,7 +356,11 @@ def _run_full_pipeline(job_id: str) -> None:
     # ── Stage 4: YouTube upload + thumbnail + schedule (87–100%) ──────────
     _update_job(job_id, status=QueueStatus.UPLOADING, stage="Uploading to YouTube…", progress=87)
     log_job(job_id, "YouTube upload started.", stage="youtube")
-    _stage_youtube(job_id, video_job_id)
+    try:
+        _stage_youtube(job_id, video_job_id)
+    except YouTubeAuthError as auth_exc:
+        _handle_youtube_auth_error(job_id, auth_exc)
+        return
     increment_uploads_today()
     log_job(job_id, "YouTube upload complete.", stage="youtube")
 
@@ -271,6 +373,7 @@ def _run_full_pipeline(job_id: str) -> None:
         completed_at=datetime.now(timezone.utc),
     )
     log_job(job_id, "Job completed successfully.", stage="complete")
+
 
 
 # ── Stage implementations ──────────────────────────────────────────────────────
@@ -496,6 +599,22 @@ def _stage_generate_video(
     from backend.video_generation_models import VideoGenerationJob, VideoJobStatus
     import os as _os
 
+    # Check if this queue job already has a completed video with existing output file
+    db_check = SessionLocal()
+    try:
+        qj = db_check.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+        if qj and qj.video_job_id:
+            vj_existing = db_check.query(VideoGenerationJob).filter(
+                VideoGenerationJob.id == qj.video_job_id,
+                VideoGenerationJob.status == VideoJobStatus.COMPLETED,
+            ).first()
+            if vj_existing and vj_existing.output_path and Path(vj_existing.output_path).exists():
+                logger.info("[queue_video %s] Reusing existing completed video: %s", job_id, vj_existing.id)
+                _update_job(job_id, stage="Reusing existing video…", progress=87)
+                return vj_existing.id
+    finally:
+        db_check.close()
+
     video_job_id_ref: list[str] = []
 
     def _progress_cb(pct: int, step: str) -> None:
@@ -591,7 +710,7 @@ def _stage_generate_video(
             db.close()
 
         logger.info("[queue_video %s] Starting video pipeline: job_id=%s, project=%s, audio=%s", job_id, vj_id, content_project_id, audio_id)
-        result = asyncio.run(run_pipeline(
+        coro_or_result = run_pipeline(
             job_id=vj_id,
             content_project_id=content_project_id,
             audio_id=audio_id,
@@ -601,7 +720,11 @@ def _stage_generate_video(
             captions_enabled=True,
             music_enabled=True,
             progress_callback=_progress_cb,
-        ))
+        )
+        if asyncio.iscoroutine(coro_or_result):
+            result = asyncio.run(coro_or_result)
+        else:
+            result = coro_or_result
         logger.info("[queue_video %s] Video pipeline returned successfully: output=%s", job_id, result.get("output_path"))
 
         # Update VideoGenerationJob record
@@ -655,26 +778,24 @@ def _stage_youtube(job_id: str, video_job_id: str) -> None:
     """
     Upload video + thumbnail to YouTube, then set schedule if configured.
     Updates individual sub-status flags.
+
+    Raises:
+        YouTubeAuthError: On invalid_grant.  Caller must mark the job as
+            awaiting_auth and NOT retry with the same credentials.
+        RuntimeError:     On missing files or other permanent errors.
     """
     from backend.db import SessionLocal
     from backend.queue_models import ContentQueueJob, QueueStatus
     from backend.video_generation_models import VideoGenerationJob
     from backend.content_models import ContentProject, GeneratedScriptRecord
+    from backend.services.queue_services import log_job
+    from backend.services.video.exceptions import YouTubeAuthError
 
     db = SessionLocal()
     try:
         job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
         if not job:
             raise RuntimeError(f"Queue job not found: {job_id}")
-
-        # ── Duplicate protection ───────────────────────────────────────────
-        if job.youtube_video_id:
-            logger.info(
-                "Skipping upload — youtube_video_id already set: %s",
-                job.youtube_video_id,
-            )
-            _update_job(job_id, stage="Already uploaded.", progress=95)
-            return
 
         vj = db.query(VideoGenerationJob).filter(
             VideoGenerationJob.id == video_job_id
@@ -699,86 +820,120 @@ def _stage_youtube(job_id: str, video_job_id: str) -> None:
                 description = cp.script.description or ""
                 tags        = cp.script.tags_as_list()
 
-        # ── Upload video ───────────────────────────────────────────────────
-        _update_job(job_id, stage="Uploading video to YouTube…", progress=88)
-
         import youtube as yt_core
         from googleapiclient.errors import HttpError
 
-        logger.info("Uploading video: %s -> '%s'", Path(output_path).name, title[:60])
-
-        upload_result = _retry_call(
-            fn=lambda: yt_core.upload_video(
-                file_path=output_path,
-                title=title[:100],
-                description=description[:5000],
-                tags=tags[:30],
-                category_id=job.youtube_category_id,
-                privacy_status="private",  # always private initially
-                publish_at=None,           # set schedule separately
-            ),
-            job_id=job_id,
-            stage_name="youtube_upload",
-            permanent_exceptions=(FileNotFoundError, ValueError),
-        )
-
-        video_id = upload_result["video_id"]
-        logger.info("YouTube upload complete: video_id=%s", video_id)
-
-        # Store video_id immediately to prevent duplicate upload on retry
-        job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
-        job.youtube_video_id = video_id
-        job.youtube_url      = f"https://www.youtube.com/watch?v={video_id}"
-        job.video_uploaded   = True
-        db.commit()
-
-        # ── Upload thumbnail ───────────────────────────────────────────────
-        if vj.thumbnail_path and Path(vj.thumbnail_path).exists():
-            _update_job(job_id, stage="Uploading thumbnail…", progress=93)
-            try:
-                yt_core.set_thumbnail(video_id=video_id, image_path=vj.thumbnail_path)
-                job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
-                job.thumbnail_uploaded = True
-                db.commit()
-                logger.info("Thumbnail uploaded for video_id=%s", video_id)
-            except Exception as exc:
-                # Thumbnail failure is recorded but does NOT fail the whole job
-                logger.warning("Thumbnail upload failed for %s: %s", video_id, exc)
-                _update_job(job_id, stage=f"Thumbnail upload failed: {str(exc)[:80]}", progress=93)
-
-        # ── Set schedule ───────────────────────────────────────────────────
-        if job.scheduled_publish_at:
-            _update_job(job_id, stage="Setting schedule…", progress=96)
-            try:
-                yt_core.update_video(
-                    video_id=video_id,
-                    privacy_status="private",
-                    publish_at=job.scheduled_publish_at,
-                )
-                job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
-                job.schedule_set = True
-                db.commit()
-                logger.info(
-                    "Schedule set: video_id=%s publish_at=%s",
-                    video_id, job.scheduled_publish_at,
-                )
-            except Exception as exc:
-                logger.warning("Schedule set failed for %s: %s", video_id, exc)
-                _update_job(job_id, stage=f"Schedule failed: {str(exc)[:80]}", progress=96)
+        # ── Upload video (skip if already uploaded) ────────────────────────
+        if job.youtube_video_id:
+            # Video upload succeeded on a previous attempt; skip re-upload
+            video_id = job.youtube_video_id
+            logger.info(
+                "Skipping video re-upload — youtube_video_id already set: %s. "
+                "Continuing with thumbnail/schedule.",
+                video_id,
+            )
+            log_job(job_id, f"Video already uploaded (id={video_id}), resuming post-upload steps.", stage="youtube")
+            _update_job(job_id, stage="Video already uploaded — checking thumbnail/schedule…", progress=92)
         else:
-            # No scheduling — just update to configured privacy
+            _update_job(job_id, stage="Uploading video to YouTube…", progress=88)
+            log_job(job_id, f"Upload starting — reusing existing video: {Path(output_path).name}", stage="youtube")
+            logger.info("Uploading video: %s -> '%s'", Path(output_path).name, title[:60])
+
             try:
-                yt_core.update_video(
-                    video_id=video_id,
-                    privacy_status=job.youtube_privacy_status,
+                def _upload_progress_cb(current: int, total: int) -> None:
+                    if total > 0:
+                        pct = int((current / total) * 100)
+                        prog = min(92, 88 + int((current / total) * 4))
+                        logger.info("YouTube upload progress for job %s: %d/%d bytes (%d%%)", job_id, current, total, pct)
+                        _update_job(job_id, stage=f"Uploading video to YouTube… {pct}%", progress=prog)
+
+                upload_result = _retry_call(
+                    fn=lambda: yt_core.upload_video(
+                        file_path=output_path,
+                        title=title[:100],
+                        description=description[:5000],
+                        tags=tags[:30],
+                        category_id=job.youtube_category_id,
+                        privacy_status="private",  # always private initially
+                        publish_at=None,           # set schedule separately
+                        progress_callback=_upload_progress_cb,
+                    ),
+                    job_id=job_id,
+                    stage_name="youtube_upload",
+                    permanent_exceptions=(FileNotFoundError, ValueError, YouTubeAuthError, TimeoutError),
                 )
-            except Exception as exc:
-                logger.warning("Privacy update failed: %s", exc)
+            except YouTubeAuthError:
+                # Bubble up — handled in _run_full_pipeline
+                raise
+
+            video_id = upload_result["video_id"]
+            logger.info("YouTube upload complete: video_id=%s", video_id)
+
+            # Store video_id immediately to prevent duplicate upload on retry
+            job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+            job.youtube_video_id = video_id
+            job.youtube_url      = f"https://www.youtube.com/watch?v={video_id}"
+            job.video_uploaded   = True
+            db.commit()
+
+        # Refresh job for thumbnail/schedule checks
+        job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+
+        # ── Upload thumbnail (skip if already uploaded) ────────────────────
+        if not job.thumbnail_uploaded:
+            if vj.thumbnail_path and Path(vj.thumbnail_path).exists():
+                _update_job(job_id, stage="Uploading thumbnail…", progress=93)
+                try:
+                    yt_core.set_thumbnail(video_id=video_id, image_path=vj.thumbnail_path)
+                    job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+                    job.thumbnail_uploaded = True
+                    db.commit()
+                    logger.info("Thumbnail uploaded for video_id=%s", video_id)
+                except Exception as exc:
+                    # Thumbnail failure is recorded but does NOT fail the whole job
+                    logger.warning("Thumbnail upload failed for %s: %s", video_id, exc)
+                    _update_job(job_id, stage=f"Thumbnail upload failed: {str(exc)[:80]}", progress=93)
+        else:
+            logger.info("Skipping thumbnail upload — already done for video_id=%s", video_id)
+
+        # ── Set schedule (skip if already set) ────────────────────────────
+        job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+        if not job.schedule_set:
+            if job.scheduled_publish_at:
+                _update_job(job_id, stage="Setting schedule…", progress=96)
+                try:
+                    yt_core.update_video(
+                        video_id=video_id,
+                        privacy_status="private",
+                        publish_at=job.scheduled_publish_at,
+                    )
+                    job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+                    job.schedule_set = True
+                    db.commit()
+                    logger.info(
+                        "Schedule set: video_id=%s publish_at=%s",
+                        video_id, job.scheduled_publish_at,
+                    )
+                except Exception as exc:
+                    logger.warning("Schedule set failed for %s: %s", video_id, exc)
+                    _update_job(job_id, stage=f"Schedule failed: {str(exc)[:80]}", progress=96)
+            else:
+                # No scheduling — just update to configured privacy
+                try:
+                    yt_core.update_video(
+                        video_id=video_id,
+                        privacy_status=job.youtube_privacy_status,
+                    )
+                except Exception as exc:
+                    logger.warning("Privacy update failed: %s", exc)
+        else:
+            logger.info("Skipping schedule — already set for video_id=%s", video_id)
 
         _update_job(job_id, stage="YouTube upload complete.", progress=99)
 
     finally:
         db.close()
+
 
 
 # ── Retry helper ──────────────────────────────────────────────────────────────
@@ -787,6 +942,8 @@ _TRANSIENT_KEYWORDS = (
     "timeout", "rate limit", "rate-limit", "ratelimit", "429", "503", "502",
     "connection", "network", "refused", "ssl", "ttl", "temporary",
     "duckduckgo rate", "too many requests",
+    # YouTube resumable upload transient errors
+    "max retries exceeded", "retriable", "location: header", "redirected",
 )
 
 # Exception types that are always transient regardless of message content
@@ -901,6 +1058,31 @@ def _update_job(
         db.close()
 
 
+def _handle_youtube_auth_error(job_id: str, exc: Exception) -> None:
+    from backend.db import SessionLocal
+    from backend.queue_models import ContentQueueJob, QueueStatus
+    from backend.services.queue_services import log_job
+    
+    db = SessionLocal()
+    try:
+        job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+        if not job:
+            return
+        job.status = QueueStatus.AWAITING_AUTH
+        job.last_error_type = "youtube_auth_required"
+        job.error_message = str(exc)[:500]
+        job.current_stage = "Awaiting YouTube reauthorization"
+        job.failed_at = datetime.now(timezone.utc)
+        db.commit()
+        
+        msg = "YouTube authentication required — upload skipped, reauthorization needed."
+        logger.error(msg)
+        log_job(job_id, msg, level="error", stage="youtube")
+    except Exception as db_exc:
+        logger.error("_handle_youtube_auth_error failed: %s", db_exc)
+    finally:
+        db.close()
+
 def _mark_failed(job_id: str, message: str) -> None:
     from backend.db import SessionLocal
     from backend.queue_models import ContentQueueJob, QueueStatus
@@ -912,6 +1094,11 @@ def _mark_failed(job_id: str, message: str) -> None:
         job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
         if not job:
             return
+            
+        if job.last_error_type == "youtube_auth_required":
+            # Already handled by _handle_youtube_auth_error
+            return
+            
         if job.retry_count < job.max_retries:
             job.retry_count += 1
             next_attempt = job.retry_count
@@ -1006,11 +1193,16 @@ def _recover_stale_jobs() -> None:
                 job.status        = QueueStatus.QUEUED
                 job.current_stage = f"Requeued after restart (attempt {job.retry_count}/{job.max_retries})"
                 job.progress      = 0
+                # Clear started_at so next claim sets a fresh timestamp
+                job.started_at    = None
                 logger.info("Requeued stale job %s for retry", job.id)
             else:
                 job.status        = QueueStatus.FAILED
                 job.error_message = "Job was in active state on startup with no retries remaining. Server may have crashed."
                 job.current_stage = "Failed"
+                # Ensure failed_at is always populated
+                if not job.failed_at:
+                    job.failed_at = datetime.now(timezone.utc)
                 logger.warning("Marked stale job %s as failed (no retries left)", job.id)
         if stale:
             db.commit()

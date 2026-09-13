@@ -46,20 +46,40 @@ def _ffprobe() -> str:
     return get_ffprobe_path()
 
 
-def _run(cmd: list[str], timeout: int = 600, label: str = "ffmpeg") -> str:
+def _run(
+    cmd: list[str],
+    timeout: int = 600,
+    label: str = "ffmpeg",
+    cwd: Optional[str] = None,
+) -> str:
     """
     Run an FFmpeg/FFprobe command, return stdout.
     Raises FFmpegError with complete command, return code, and full stderr on failure.
+
+    Args:
+        cmd:     Command + arguments list.
+        timeout: Subprocess timeout in seconds.
+        label:   Human-readable label used in log messages.
+        cwd:     Working directory for the subprocess.  Used when referencing SRT
+                 files by filename only (Windows/libass path-safety technique).
     """
     from backend.services.video.exceptions import FFmpegError
-    logger.info("Running %s: %s", label, " ".join(cmd))
+    logger.info("Running %s (cwd=%s): %s", label, cwd or "<inherit>", " ".join(cmd))
     t0 = time.perf_counter()
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+    except subprocess.TimeoutExpired:
+        elapsed = time.perf_counter() - t0
+        raise FFmpegError(
+            f"{label} timed out after {elapsed:.0f}s (limit={timeout}s). "
+            f"Command: {' '.join(cmd)}"
+        )
     elapsed = time.perf_counter() - t0
     if result.returncode != 0:
         # Log complete error information for debugging
@@ -80,6 +100,7 @@ def _run(cmd: list[str], timeout: int = 600, label: str = "ffmpeg") -> str:
         )
     logger.info("%s completed in %.1fs", label, elapsed)
     return result.stdout
+
 
 
 # ── Scene timing ──────────────────────────────────────────────────────────────
@@ -358,25 +379,60 @@ def burn_captions(
     output_path: Path,
     width: int,
     height: int,
+    video_duration: float = 0.0,
 ) -> Path:
     """
     Burn SRT subtitles into the video using the FFmpeg subtitles filter.
+
+    Windows-safe approach:
+      1. Copy the SRT file into the output directory (already on G:, short path).
+      2. Run FFmpeg with cwd= set to that directory.
+      3. Reference the SRT by filename only — libass resolves it via the working
+         directory, which completely avoids drive-letter colon-escaping issues that
+         cause libass to hang on Windows paths.
+
+    Using ultrafast preset because:
+      - Caption burn is an *intermediate* step; final_encode() at medium preset
+        produces the polished output.
+      - ultrafast is 3-4× faster than fast on an i5-6300U (no GPU needed).
+      - Quality difference for an intermediate file is irrelevant.
     """
+    import shutil as _shutil
+
     ff = _ffmpeg()
 
     if not srt_path.exists() or srt_path.stat().st_size == 0:
-        logger.warning("SRT is empty or missing — skipping caption burn")
-        import shutil
-        shutil.copy2(str(video_path), str(output_path))
+        logger.warning("[burn_captions] SRT is empty or missing — skipping caption burn")
+        _shutil.copy2(str(video_path), str(output_path))
         return output_path
 
+    # ── Step 1: Copy SRT to the output directory ──────────────────────────────
+    # This ensures libass can find it via a plain filename with no path separators.
+    work_dir = output_path.parent
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    srt_local = work_dir / srt_path.name
+    if srt_local.resolve() != srt_path.resolve():
+        _shutil.copy2(str(srt_path), str(srt_local))
+    srt_filename = srt_path.name   # bare filename — no path components
+
+    # Re-encode the SRT as UTF-8 (guards against BOM or wrong encoding)
+    try:
+        raw = srt_path.read_bytes()
+        # Strip UTF-8 BOM if present
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        srt_local.write_bytes(raw)
+    except Exception as enc_exc:
+        logger.warning("[burn_captions] SRT encoding fixup failed (%s) — using original copy", enc_exc)
+
+    # ── Step 2: Build subtitle filter ────────────────────────────────────────
     font_size = max(28, int(height * 0.035))
 
-    # FFmpeg on Windows needs escaped path with forward slashes
-    srt_safe = str(srt_path).replace("\\", "/").replace(":", "\\:")
-
+    # Reference by plain filename — no path separators, no drive-letter colon.
+    # libass resolves this relative to the FFmpeg working directory (cwd).
     subtitle_filter = (
-        f"subtitles='{srt_safe}':"
+        f"subtitles='{srt_filename}':"
         f"force_style='FontSize={font_size},"
         f"PrimaryColour=&H00FFFFFF,"   # white text
         f"OutlineColour=&H00000000,"   # black outline
@@ -386,21 +442,61 @@ def burn_captions(
         f"Alignment=2'"                # bottom-center
     )
 
-    # Note: burn_captions uses -c:a copy, so bitrate is preserved from input
+    # ── Step 3: Calibrate timeout ─────────────────────────────────────────────
+    # ultrafast preset processes roughly 10–20× real-time on an i5-6300U.
+    # Allow 8× real-time as the upper bound, with a floor of 120s.
+    if video_duration > 0:
+        timeout = max(120, int(video_duration * 8))
+    else:
+        timeout = 300  # safe fallback when duration is unknown
+
+    # ── Step 4: Build and log the command ─────────────────────────────────────
     cmd = [
         ff, "-y",
         "-i", str(video_path),
         "-vf", subtitle_filter,
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "20",
+        "-preset", "ultrafast",   # fast intermediate; final_encode() re-encodes at medium
+        "-crf", "23",
         "-pix_fmt", "yuv420p",
         "-c:a", "copy",
         "-movflags", "+faststart",
         str(output_path),
     ]
-    _run(cmd, timeout=600, label="burn_captions")
+
+    logger.info(
+        "[burn_captions] Starting caption burn — input=%s srt=%s output=%s "
+        "cwd=%s timeout=%ds preset=ultrafast",
+        video_path.name, srt_filename, output_path.name, str(work_dir), timeout,
+    )
+    logger.info("[burn_captions] Caption burn command: %s", " ".join(cmd))
+
+    t_burn = time.perf_counter()
+    _run(cmd, timeout=timeout, label="burn_captions", cwd=str(work_dir))
+    elapsed_burn = time.perf_counter() - t_burn
+
+    # ── Step 5: Verify output ─────────────────────────────────────────────────
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        from backend.services.video.exceptions import FFmpegError
+        raise FFmpegError(
+            f"[burn_captions] Output file missing or empty after FFmpeg completed: "
+            f"{output_path}"
+        )
+
+    logger.info(
+        "[burn_captions] Caption burn completed in %.1fs — output=%s size=%.1f MB",
+        elapsed_burn, output_path.name, output_path.stat().st_size / 1024 / 1024,
+    )
+
+    # Clean up the local SRT copy (temp — not the original)
+    if srt_local.resolve() != srt_path.resolve():
+        try:
+            srt_local.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     return output_path
+
 
 
 # ── Final encode ──────────────────────────────────────────────────────────────
