@@ -34,8 +34,12 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Required scope for uploading videos
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+# Required scopes for uploading videos and playlist management
+# Note: Adding the youtube scope will trigger reauthorization for existing tokens
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube",  # For playlist operations
+]
 
 # auth.py lives at the project root, so __file__ gives us a stable anchor.
 _HERE = Path(__file__).resolve().parent
@@ -68,7 +72,19 @@ def get_credentials() -> Credentials:
 
     # Load cached token if it exists
     if os.path.exists(TOKEN_FILE):
-        creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        try:
+            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
+        except ValueError as exc:
+            # This happens when scopes don't match between token and requested scopes
+            logger.warning("Token scopes mismatch (likely due to scope additions), reauthorization required: %s", exc)
+            # Rename the outdated token to force reauthorization
+            invalid_token_path = TOKEN_FILE + ".invalid"
+            try:
+                os.rename(TOKEN_FILE, invalid_token_path)
+                logger.warning("Token with outdated scopes renamed to %s", Path(invalid_token_path).name)
+            except OSError as rename_exc:
+                logger.warning("Could not rename outdated token file: %s", rename_exc)
+            creds = None
 
     # If no valid credentials, go through the OAuth flow
     if not creds or not creds.valid:
@@ -99,7 +115,7 @@ def get_credentials() -> Credentials:
                         )
                     raise YouTubeAuthError(
                         "YouTube OAuth token is invalid (invalid_grant). "
-                        "The refresh token has been revoked or expired. "
+                        "The refresh token has been revoked or expired, or the required scopes have changed. "
                         "To reauthorize: delete token.json and run 'python auth.py' "
                         "(or visit the /api/auth/reauthorize endpoint if available). "
                         "credentials.json has NOT been modified."

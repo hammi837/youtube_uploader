@@ -198,6 +198,8 @@ export interface VideoJob {
   file_size_bytes: number | null;
   captions_enabled: boolean;
   music_enabled: boolean;
+  // Phase 3E.1: Template support
+  template_id: string;
   error_message: string | null;
   created_at: string;
   updated_at: string;
@@ -205,6 +207,19 @@ export interface VideoJob {
   video_url: string | null;
   thumbnail_url: string | null;
   caption_url: string | null;
+}
+
+// ── Phase 3E.1: Video Templates ───────────────────────────────────────────────
+
+export interface VideoTemplate {
+  template_id: string;
+  name: string;
+  description: string;
+  background_type: string;
+  layout_type: string;
+  typography_style: string;
+  caption_style: string;
+  supports_animation: boolean;
 }
 
 // ── Phase 3A: Content Queue ──────────────────────────────────────────────────
@@ -256,6 +271,27 @@ export interface QueueJob {
   failed_at: string | null;
   cancelled_at: string | null;
   next_retry_at: string | null;
+  // Phase 3D fields
+  made_for_kids: boolean;
+  youtube_playlist_id: string | null;
+  playlist_added: boolean;
+  playlist_error: string | null;
+  custom_title: string | null;
+  custom_description: string | null;
+  custom_tags: string[] | null;
+  youtube_studio_url: string | null;
+  // Phase 3E.1: Template support
+  template_id: string;
+}
+
+// ── Phase 3D: YouTube Playlist ───────────────────────────────────────────────
+
+export interface YouTubePlaylist {
+  id: string;
+  title: string;
+  description: string;
+  item_count: number;
+  cached_at: string;
 }
 
 export interface BulkQueueRequest {
@@ -271,6 +307,14 @@ export interface BulkQueueRequest {
   schedule_timezone?: string;
   youtube_privacy_status?: string;
   youtube_category_id?: string;
+  // Phase 3D fields
+  made_for_kids?: boolean;
+  youtube_playlist_id?: string;
+  custom_title?: string;
+  custom_description?: string;
+  custom_tags?: string[];
+  // Phase 3E.1: Template support
+  template_id?: string;
 }
 
 export interface BulkQueueResponse {

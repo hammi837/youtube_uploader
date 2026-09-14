@@ -17,6 +17,7 @@ Security: no credentials, no tokens, no filesystem paths exposed.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -135,6 +136,14 @@ def create_queue_jobs(
             youtube_privacy_status=body.youtube_privacy_status,
             youtube_category_id=body.youtube_category_id,
             status=QueueStatus.QUEUED,
+            # Phase 3D fields
+            made_for_kids=body.made_for_kids,
+            youtube_playlist_id=body.youtube_playlist_id,
+            custom_title=body.custom_title,
+            custom_description=body.custom_description,
+            custom_tags=json.dumps(body.custom_tags) if body.custom_tags else None,
+            # Phase 3E.1: Template support
+            template_id=body.template_id,
         )
         db.add(job)
         jobs.append(job)
@@ -492,3 +501,50 @@ def get_job_logs_endpoint(
     """Return chronological log entries for a job. No credentials exposed."""
     _get_job_or_404(job_id, db)
     return get_job_logs(job_id, limit=limit)
+
+
+# ── PATCH /api/queue/{job_id}/metadata ────────────────────────────────────────
+
+@router.patch("/{job_id}/metadata", response_model=QueueJobResponse)
+def update_job_metadata(
+    job_id: str,
+    metadata: dict,
+    db: Session = Depends(get_db),
+) -> QueueJobResponse:
+    """
+    Update publishing metadata for a queued job.
+    
+    Only allowed for jobs in QUEUED status (before worker starts).
+    Updates custom_title, custom_description, custom_tags, made_for_kids, youtube_playlist_id.
+    """
+    job = _get_job_or_404(job_id, db)
+    
+    if job.status != QueueStatus.QUEUED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Can only update metadata for queued jobs. Current status: {job.status}",
+        )
+    
+    # Update allowed fields
+    if "custom_title" in metadata:
+        job.custom_title = metadata["custom_title"] or None
+    
+    if "custom_description" in metadata:
+        job.custom_description = metadata["custom_description"] or None
+    
+    if "custom_tags" in metadata:
+        tags = metadata["custom_tags"]
+        if tags:
+            job.custom_tags = json.dumps(tags)
+        else:
+            job.custom_tags = None
+    
+    if "made_for_kids" in metadata:
+        job.made_for_kids = metadata["made_for_kids"]
+    
+    if "youtube_playlist_id" in metadata:
+        job.youtube_playlist_id = metadata["youtube_playlist_id"] or None
+    
+    db.commit()
+    db.refresh(job)
+    return queue_job_to_response(job)

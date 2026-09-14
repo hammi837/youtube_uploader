@@ -140,6 +140,20 @@ class ContentQueueJob(Base):
     thumbnail_uploaded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     schedule_set: Mapped[bool]      = mapped_column(Boolean, nullable=False, default=False)
 
+    # ── Phase 3D: Enhanced publishing controls ───────────────────────────────
+    made_for_kids: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    youtube_playlist_id: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    playlist_added: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    playlist_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    
+    # Custom metadata overrides (stored as text, JSON for tags)
+    custom_title: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    custom_description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    custom_tags: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # JSON array
+
+    # ── Phase 3E.1: Template support ───────────────────────────────────────────
+    template_id: Mapped[str] = mapped_column(String(50), nullable=False, default="minimal_dark")
+
     # ── Error tracking ─────────────────────────────────────────────────────
     error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     last_error_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -214,6 +228,16 @@ class BulkQueueRequest(BaseModel):
     )
     youtube_privacy_status: str  = Field("private")
     youtube_category_id: str     = Field("22")
+    
+    # ── Phase 3D: Enhanced publishing controls ─────────────────────────────
+    made_for_kids: bool = Field(False)
+    youtube_playlist_id: Optional[str] = Field(None)
+    custom_title: Optional[str] = Field(None, max_length=100)
+    custom_description: Optional[str] = Field(None, max_length=5000)
+    custom_tags: Optional[list[str]] = Field(None)
+    
+    # ── Phase 3E.1: Template support ───────────────────────────────────────
+    template_id: str = Field("minimal_dark", description="Video template ID")
 
     @field_validator("topics")
     @classmethod
@@ -241,6 +265,21 @@ class BulkQueueRequest(BaseModel):
         if v not in ("private", "unlisted", "public"):
             raise ValueError("youtube_privacy_status must be private, unlisted, or public")
         return v
+
+    @field_validator("custom_tags")
+    @classmethod
+    def validate_tags(cls, v: Optional[list[str]]) -> Optional[list[str]]:
+        if v is None:
+            return None
+        # Validate total character limit (YouTube: 500 chars for all tags combined)
+        total_chars = sum(len(tag) for tag in v)
+        if total_chars > 500:
+            raise ValueError(f"Custom tags exceed 500 character limit (current: {total_chars})")
+        # Validate individual tag length (YouTube: 100 chars per tag max)
+        for tag in v:
+            if len(tag) > 100:
+                raise ValueError(f"Tag '{tag[:20]}...' exceeds 100 character limit")
+        return v[:30]  # Max 30 tags
 
 
 class QueueJobResponse(BaseModel):
@@ -277,6 +316,19 @@ class QueueJobResponse(BaseModel):
     failed_at: Optional[datetime]
     cancelled_at: Optional[datetime]
     next_retry_at: Optional[datetime]
+    
+    # ── Phase 3D: Enhanced publishing controls ─────────────────────────────
+    made_for_kids: bool = False
+    youtube_playlist_id: Optional[str] = None
+    playlist_added: bool = False
+    playlist_error: Optional[str] = None
+    custom_title: Optional[str] = None
+    custom_description: Optional[str] = None
+    custom_tags: Optional[list[str]] = None
+    youtube_studio_url: Optional[str] = None  # Computed field
+    
+    # ── Phase 3E.1: Template support ───────────────────────────────────────
+    template_id: str = "minimal_dark"
 
     model_config = {"from_attributes": True}
 
@@ -312,6 +364,21 @@ class BulkQueueResponse(BaseModel):
 
 def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
     now = datetime.now(timezone.utc)
+    
+    # Compute YouTube Studio URL if video exists
+    youtube_studio_url = None
+    if job.youtube_video_id:
+        youtube_studio_url = f"https://studio.youtube.com/video/{job.youtube_video_id}/edit"
+    
+    # Parse custom tags from JSON if present
+    custom_tags = None
+    if hasattr(job, 'custom_tags') and job.custom_tags:
+        try:
+            import json
+            custom_tags = json.loads(job.custom_tags)
+        except (json.JSONDecodeError, TypeError):
+            custom_tags = None
+    
     return QueueJobResponse(
         id=job.id,
         topic=job.topic,
@@ -345,6 +412,17 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         failed_at=getattr(job, "failed_at", None),
         cancelled_at=getattr(job, "cancelled_at", None),
         next_retry_at=getattr(job, "next_retry_at", None),
+        # Phase 3D fields
+        made_for_kids=getattr(job, "made_for_kids", False),
+        youtube_playlist_id=getattr(job, "youtube_playlist_id", None),
+        playlist_added=getattr(job, "playlist_added", False),
+        playlist_error=getattr(job, "playlist_error", None),
+        custom_title=getattr(job, "custom_title", None),
+        custom_description=getattr(job, "custom_description", None),
+        custom_tags=custom_tags,
+        youtube_studio_url=youtube_studio_url,
+        # Phase 3E.1: Template support
+        template_id=getattr(job, "template_id", "minimal_dark"),
     )
 
 
@@ -430,3 +508,32 @@ class QueueStatsResponse(BaseModel):
     upload_limit: int
     free_disk_gb: float
     avg_processing_minutes: float
+
+
+# ── Phase 3D: YouTube Playlist Model ─────────────────────────────────────────
+
+class YouTubePlaylist(Base):
+    """Cache of user's YouTube playlists for selection."""
+    __tablename__ = "youtube_playlists"
+
+    id: Mapped[str] = mapped_column(
+        String(100), primary_key=True  # YouTube playlist ID
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    cached_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(),
+    )
+
+
+# ── Phase 3D: Pydantic schemas for playlist ─────────────────────────────────
+
+class YouTubePlaylistResponse(BaseModel):
+    """API response for a YouTube playlist."""
+    id: str
+    title: str
+    description: Optional[str]
+    item_count: int
+    cached_at: datetime
+    model_config = {"from_attributes": True}

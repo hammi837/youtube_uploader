@@ -82,6 +82,9 @@ class VideoGenerationJob(Base):
     # Settings used for this job
     captions_enabled: Mapped[bool] = mapped_column(nullable=False, default=True)
     music_enabled: Mapped[bool]    = mapped_column(nullable=False, default=True)
+    
+    # Phase 3E.1: Template support
+    template_id: Mapped[str] = mapped_column(String(50), nullable=False, default="minimal_dark")
 
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -115,6 +118,8 @@ class VideoGenerationRequest(BaseModel):
     fps: int                     = Field(30, ge=15, le=60)
     captions_enabled: bool       = Field(True)
     music_enabled: bool          = Field(True)
+    # Phase 3E.1: Template support
+    template_id: str             = Field("minimal_dark", description="Video template ID")
 
 
 class VideoJobResponse(BaseModel):
@@ -135,6 +140,8 @@ class VideoJobResponse(BaseModel):
     file_size_bytes: Optional[int]
     captions_enabled: bool
     music_enabled: bool
+    # Phase 3E.1: Template support
+    template_id: str
     error_message: Optional[str]
     created_at: datetime
     updated_at: datetime
@@ -166,6 +173,7 @@ def job_to_response(job: VideoGenerationJob) -> VideoJobResponse:
         file_size_bytes=job.file_size_bytes,
         captions_enabled=job.captions_enabled,
         music_enabled=job.music_enabled,
+        template_id=job.template_id,
         error_message=job.error_message,
         created_at=job.created_at or now,
         updated_at=job.updated_at or now,

@@ -283,7 +283,7 @@ def _run_full_pipeline(job_id: str) -> None:
             )
             log_job(job_id, "YouTube upload started (upload-only retry).", stage="youtube")
             try:
-                _stage_youtube(job_id, existing_video_job_id)
+                _stage_youtube(job_id, existing_video_job_id, skip_video_upload=True)
             except YouTubeAuthError as auth_exc:
                 _handle_youtube_auth_error(job_id, auth_exc)
                 return
@@ -685,6 +685,10 @@ def _stage_generate_video(
         # Create VideoGenerationJob record
         db = SessionLocal()
         try:
+            # Get template_id from queue job
+            qj_template = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+            template_id = qj_template.template_id if qj_template else "minimal_dark"
+            
             vj = VideoGenerationJob(
                 id=vj_id,
                 content_project_id=content_project_id,
@@ -697,6 +701,7 @@ def _stage_generate_video(
                 fps=30,
                 captions_enabled=True,
                 music_enabled=True,
+                template_id=template_id,  # Phase 3E.1
             )
             db.add(vj)
 
@@ -720,6 +725,7 @@ def _stage_generate_video(
             captions_enabled=True,
             music_enabled=True,
             progress_callback=_progress_cb,
+            template_id=template_id,  # Phase 3E.1
         )
         if asyncio.iscoroutine(coro_or_result):
             result = asyncio.run(coro_or_result)
@@ -774,10 +780,15 @@ def _stage_generate_video(
     return video_job_id_ref[0] if video_job_id_ref else ""
 
 
-def _stage_youtube(job_id: str, video_job_id: str) -> None:
+def _stage_youtube(job_id: str, video_job_id: str, skip_video_upload: bool = False) -> None:
     """
     Upload video + thumbnail to YouTube, then set schedule if configured.
     Updates individual sub-status flags.
+
+    Args:
+        job_id: Queue job ID
+        video_job_id: Video generation job ID
+        skip_video_upload: If True, skip video upload (for upload-only retry path)
 
     Raises:
         YouTubeAuthError: On invalid_grant.  Caller must mark the job as
@@ -807,24 +818,48 @@ def _stage_youtube(job_id: str, video_job_id: str) -> None:
         if not Path(output_path).exists():
             raise RuntimeError(f"Video file not found: {output_path}")
 
-        # Get title / description from content project
+        # Get title / description from content project or custom overrides
         title = job.topic
         description = ""
         tags: list[str] = []
-        if job.content_project_id:
+        
+        # Use custom metadata if provided, otherwise use AI-generated
+        if job.custom_title:
+            title = job.custom_title
+        elif job.content_project_id:
             cp = db.query(ContentProject).filter(
                 ContentProject.id == job.content_project_id
             ).first()
             if cp and cp.script:
-                title       = cp.script.title or job.topic
+                title = cp.script.title or job.topic
+        
+        if job.custom_description:
+            description = job.custom_description
+        elif job.content_project_id:
+            cp = db.query(ContentProject).filter(
+                ContentProject.id == job.content_project_id
+            ).first()
+            if cp and cp.script:
                 description = cp.script.description or ""
-                tags        = cp.script.tags_as_list()
+        
+        if job.custom_tags:
+            import json as _json
+            try:
+                tags = _json.loads(job.custom_tags)
+            except (json.JSONDecodeError, TypeError):
+                tags = []
+        elif job.content_project_id:
+            cp = db.query(ContentProject).filter(
+                ContentProject.id == job.content_project_id
+            ).first()
+            if cp and cp.script:
+                tags = cp.script.tags_as_list()
 
         import youtube as yt_core
         from googleapiclient.errors import HttpError
 
-        # ── Upload video (skip if already uploaded) ────────────────────────
-        if job.youtube_video_id:
+        # ── Upload video (skip if already uploaded or skip_video_upload is True) ─
+        if job.youtube_video_id or skip_video_upload:
             # Video upload succeeded on a previous attempt; skip re-upload
             video_id = job.youtube_video_id
             logger.info(
@@ -856,6 +891,7 @@ def _stage_youtube(job_id: str, video_job_id: str) -> None:
                         category_id=job.youtube_category_id,
                         privacy_status="private",  # always private initially
                         publish_at=None,           # set schedule separately
+                        made_for_kids=job.made_for_kids,
                         progress_callback=_upload_progress_cb,
                     ),
                     job_id=job_id,
@@ -928,6 +964,30 @@ def _stage_youtube(job_id: str, video_job_id: str) -> None:
                     logger.warning("Privacy update failed: %s", exc)
         else:
             logger.info("Skipping schedule — already set for video_id=%s", video_id)
+
+        # ── Add to playlist (skip if already added) ─────────────────────────
+        job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+        if job.youtube_playlist_id and not job.playlist_added:
+            _update_job(job_id, stage="Adding to playlist…", progress=98)
+            try:
+                yt_core.add_to_playlist(video_id, job.youtube_playlist_id)
+                job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+                job.playlist_added = True
+                job.playlist_error = None
+                db.commit()
+                logger.info("Video added to playlist: playlist_id=%s video_id=%s", job.youtube_playlist_id, video_id)
+                log_job(job_id, f"Added to playlist: {job.youtube_playlist_id}", stage="youtube")
+            except Exception as exc:
+                # Playlist addition failure is non-blocking
+                error_msg = str(exc)[:200]
+                logger.warning("Failed to add video to playlist: %s", error_msg)
+                job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
+                job.playlist_error = error_msg
+                db.commit()
+                log_job(job_id, f"Playlist addition failed: {error_msg}", level="warning", stage="youtube")
+                _update_job(job_id, stage=f"Playlist addition failed: {error_msg[:50]}", progress=98)
+        elif job.youtube_playlist_id and job.playlist_added:
+            logger.info("Skipping playlist addition — already done for video_id=%s", video_id)
 
         _update_job(job_id, stage="YouTube upload complete.", progress=99)
 

@@ -100,6 +100,7 @@ def create_video_job(
         fps=body.fps,
         captions_enabled=body.captions_enabled,
         music_enabled=body.music_enabled,
+        template_id=body.template_id,  # Phase 3E.1
     )
     db.add(job)
     db.commit()
@@ -115,6 +116,7 @@ def create_video_job(
         fps=body.fps,
         captions_enabled=body.captions_enabled,
         music_enabled=body.music_enabled,
+        template_id=body.template_id,  # Phase 3E.1
     )
 
     logger.info(
@@ -288,6 +290,7 @@ def _run_video_pipeline_task(
     fps: int,
     captions_enabled: bool,
     music_enabled: bool,
+    template_id: str = "minimal_dark",  # Phase 3E.1
 ) -> None:
     """
     Background task: run the pipeline and update the DB record.
@@ -350,6 +353,7 @@ def _run_video_pipeline_task(
                 captions_enabled=captions_enabled,
                 music_enabled=music_enabled,
                 progress_callback=_update_progress,
+                template_id=template_id,  # Phase 3E.1
             )
         )
 

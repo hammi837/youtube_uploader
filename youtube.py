@@ -83,6 +83,7 @@ def upload_video(
     category_id: str = "22",
     privacy_status: str = "private",
     publish_at: datetime | None = None,
+    made_for_kids: bool = False,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> dict:
@@ -98,6 +99,7 @@ def upload_video(
         privacy_status:     'private', 'unlisted', or 'public'.
                             Overridden to 'private' when publish_at is set.
         publish_at:         Timezone-aware UTC datetime for scheduled publishing.
+        made_for_kids:      Whether to designate as made for kids (set via update after upload).
         chunk_size:         Upload chunk size in bytes (default 8 MB).
         progress_callback:  Optional callable(bytes_uploaded, total_bytes).
                             Called after each chunk. Use for non-CLI progress.
@@ -124,6 +126,10 @@ def upload_video(
     status_block: dict = {"privacyStatus": effective_privacy}
     if publish_at:
         status_block["publishAt"] = _format_publish_at(publish_at)
+    
+    # Add made-for-kids designation if specified
+    if made_for_kids:
+        status_block["selfDeclaredMadeForKids"] = True
 
     body = {
         "snippet": {
@@ -292,6 +298,69 @@ def set_thumbnail(video_id: str, image_path: str) -> dict:
             media_body=media,
         ).execute()
 
+    return response
+
+
+# ── Playlist operations ───────────────────────────────────────────────────────
+
+def list_playlists() -> list[dict]:
+    """
+    Fetch the authenticated user's YouTube playlists.
+    
+    Returns:
+        List of playlist dicts with keys: id, title, description, item_count
+    """
+    service = build_service()
+    
+    response = service.playlists().list(
+        part="snippet,contentDetails",
+        mine=True,
+        maxResults=50
+    ).execute()
+    
+    playlists = []
+    for item in response.get("items", []):
+        playlists.append({
+            "id": item["id"],
+            "title": item["snippet"]["title"],
+            "description": item["snippet"].get("description", ""),
+            "item_count": item["contentDetails"]["itemCount"]
+        })
+    
+    return playlists
+
+
+def add_to_playlist(video_id: str, playlist_id: str) -> dict:
+    """
+    Add a video to a YouTube playlist.
+    
+    Args:
+        video_id: YouTube video ID to add
+        playlist_id: Target playlist ID
+        
+    Returns:
+        The created playlistItem resource dict from the API
+        
+    Raises:
+        HttpError: API error (e.g., invalid playlist ID, permissions)
+    """
+    service = build_service()
+    
+    body = {
+        "snippet": {
+            "playlistId": playlist_id,
+            "resourceId": {
+                "kind": "youtube#video",
+                "videoId": video_id
+            }
+        }
+    }
+    
+    response = service.playlistItems().insert(
+        part="snippet",
+        body=body
+    ).execute()
+    
     return response
 
 

@@ -10,7 +10,10 @@ import {
   getQueueStats,
   getQueueStatus,
   listQueueJobs,
+  listPlaylists,
+  listTemplates,
   pauseQueue,
+  refreshPlaylists,
   resumeQueue,
   retryAllFailed,
   retryQueueJob,
@@ -24,6 +27,8 @@ import type {
   QueueHealth,
   QueueJob,
   QueueStats,
+  VideoTemplate,
+  YouTubePlaylist,
 } from '../types/api';
 
 const POLL_MS = 2000;
@@ -134,6 +139,16 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [scheduleStart, setStart]   = useState('');
   const [interval, setInterval]     = useState(240);
   const [privacy, setPrivacy]       = useState('private');
+  const [madeForKids, setMadeForKids] = useState(false);
+  const [selectedPlaylist, setSelectedPlaylist] = useState<string | null>(null);
+  const [playlists, setPlaylists]   = useState<YouTubePlaylist[]>([]);
+  const [customTitle, setCustomTitle] = useState('');
+  const [customDescription, setCustomDescription] = useState('');
+  const [customTags, setCustomTags] = useState('');
+  const [showMetadata, setShowMetadata] = useState(false);
+  // Phase 3E.1: Template selection
+  const [selectedTemplate, setSelectedTemplate] = useState('minimal_dark');
+  const [templates, setTemplates] = useState<VideoTemplate[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState('');
   const [preview, setPreview]       = useState<string[]>([]);
@@ -152,16 +167,60 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
     } catch { setPreview([]); }
   }, [scheduleEnabled, scheduleStart, interval, topicsText]);
 
+  // Load playlists on mount
+  useEffect(() => {
+    loadPlaylists();
+  }, []);
+
+  // Phase 3E.1: Load templates on mount
+  useEffect(() => {
+    loadTemplates();
+  }, []);
+
+  async function loadPlaylists() {
+    try {
+      const data = await listPlaylists();
+      setPlaylists(data);
+    } catch (err) {
+      console.error('Failed to load playlists:', err);
+    }
+  }
+
+  async function loadTemplates() {
+    try {
+      const data = await listTemplates();
+      setTemplates(data);
+    } catch (err) {
+      console.error('Failed to load templates:', err);
+    }
+  }
+
+  async function handleRefreshPlaylists() {
+    try {
+      const data = await refreshPlaylists();
+      setPlaylists(data);
+    } catch (err) {
+      alert('Failed to refresh playlists: ' + (err instanceof Error ? err.message : 'Unknown error'));
+    }
+  }
+
   async function handleSubmit() {
     if (parsedTopics.length === 0) { setError('Enter at least one topic.'); return; }
     setError(''); setSubmitting(true);
     try {
+      const tagsArray = customTags ? customTags.split(',').map(t => t.trim()).filter(t => t.length > 0) : [];
       await createQueueJobs({
         topics: parsedTopics, language, tone,
         target_duration_seconds: duration, scene_count: scenes,
         schedule_start: scheduleEnabled && scheduleStart ? scheduleStart : undefined,
         schedule_interval_minutes: interval,
         youtube_privacy_status: privacy,
+        made_for_kids: madeForKids,
+        youtube_playlist_id: selectedPlaylist || undefined,
+        custom_title: customTitle || undefined,
+        custom_description: customDescription || undefined,
+        custom_tags: tagsArray.length > 0 ? tagsArray : undefined,
+        template_id: selectedTemplate,  // Phase 3E.1
       });
       onSubmitted();
     } catch (err) {
@@ -200,6 +259,94 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
             </select>
           </div>
         ))}
+      </div>
+
+      {/* Phase 3E.1: Template Selection */}
+      <div className="form-group">
+        <label className="form-label">🎨 Video Template</label>
+        <select className="form-select" value={selectedTemplate}
+          onChange={e => setSelectedTemplate(e.target.value)}
+          disabled={submitting}>
+          {templates.map(t => (
+            <option key={t.template_id} value={t.template_id}>
+              {t.name} — {t.description}
+            </option>
+          ))}
+        </select>
+        <div className="form-hint form-hint--info">
+          Template controls visual style, typography, and layout. Minimal Dark is the original style.
+        </div>
+      </div>
+
+      {/* Phase 3D: Made-for-kids and Playlist Selection */}
+      <div className="queue-form__publishing">
+        <div className="form-group">
+          <label className="checkbox-label">
+            <input type="checkbox" checked={madeForKids}
+              onChange={e => setMadeForKids(e.target.checked)} disabled={submitting} />
+            <span>👶 Made for kids (COPPA compliance)</span>
+          </label>
+          <div className="form-hint form-hint--info">
+            Designate content as made for children under 13. YouTube requires this for compliance.
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">📋 Add to playlist (optional)</label>
+          <select className="form-select" value={selectedPlaylist || ''}
+            onChange={e => setSelectedPlaylist(e.target.value || null)}
+            disabled={submitting}>
+            <option value="">No playlist</option>
+            {playlists.map(p => (
+              <option key={p.id} value={p.id}>{p.title} ({p.item_count} videos)</option>
+            ))}
+          </select>
+          <button className="btn btn--ghost btn--sm" style={{marginTop:'0.25rem'}}
+            onClick={handleRefreshPlaylists} disabled={submitting}>
+            🔄 Refresh Playlists
+          </button>
+        </div>
+      </div>
+
+      {/* Phase 3D: Custom Metadata */}
+      <div className="queue-form__metadata">
+        <button className="btn btn--ghost btn--sm" style={{marginBottom:'0.5rem'}}
+          onClick={() => setShowMetadata(!showMetadata)} disabled={submitting}>
+          {showMetadata ? '▼' : '▶'} Custom Metadata (overrides AI-generated)
+        </button>
+        
+        {showMetadata && (
+          <div className="queue-form__metadata-content">
+            <div className="form-group">
+              <label className="form-label">Custom Title (optional)</label>
+              <input type="text" className="form-input"
+                placeholder="Leave empty to use AI-generated title"
+                value={customTitle} onChange={e => setCustomTitle(e.target.value)}
+                disabled={submitting} maxLength={100} />
+              <div className="form-hint">{customTitle.length}/100 characters</div>
+            </div>
+            
+            <div className="form-group">
+              <label className="form-label">Custom Description (optional)</label>
+              <textarea className="form-textarea" rows={3}
+                placeholder="Leave empty to use AI-generated description"
+                value={customDescription} onChange={e => setCustomDescription(e.target.value)}
+                disabled={submitting} maxLength={5000} />
+              <div className="form-hint">{customDescription.length}/5000 characters</div>
+            </div>
+            
+            <div className="form-group">
+              <label className="form-label">Custom Tags (optional, comma-separated)</label>
+              <input type="text" className="form-input"
+                placeholder="tag1, tag2, tag3 (max 500 chars total)"
+                value={customTags} onChange={e => setCustomTags(e.target.value)}
+                disabled={submitting} />
+              <div className="form-hint">
+                Comma-separated tags. Total character limit: 500.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="queue-schedule-toggle">
@@ -564,8 +711,21 @@ function QueueJobCard({
         <div className="queue-job-card__yt">
           <a href={job.youtube_url} target="_blank" rel="noreferrer"
             className="btn btn--ghost btn--sm">▶ YouTube</a>
+          {job.youtube_studio_url && (
+            <a href={job.youtube_studio_url} target="_blank" rel="noreferrer"
+              className="btn btn--ghost btn--sm">🎬 Studio</a>
+          )}
           {job.thumbnail_uploaded && <span className="hint-text">🖼 ✓</span>}
           {job.schedule_set       && <span className="hint-text">📅 ✓</span>}
+          {job.playlist_added     && <span className="hint-text">📋 ✓</span>}
+          {job.made_for_kids      && <span className="hint-text">👶 Kids</span>}
+        </div>
+      )}
+
+      {/* Playlist error */}
+      {job.playlist_error && (
+        <div className="queue-job-error" style={{marginTop:'0.25rem'}}>
+          Playlist error: {job.playlist_error.substring(0,100)}
         </div>
       )}
 

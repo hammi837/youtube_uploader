@@ -64,6 +64,7 @@ async def run_pipeline(
     captions_enabled: bool,
     music_enabled: bool,
     progress_callback: Callable[[int, str], None],
+    template_id: str = "minimal_dark",  # Phase 3E.1
 ) -> dict:
     """
     Run the full video generation pipeline in a thread executor.
@@ -84,6 +85,7 @@ async def run_pipeline(
         captions_enabled,
         music_enabled,
         progress_callback,
+        template_id,  # Phase 3E.1
     )
 
 
@@ -99,6 +101,7 @@ def _run_pipeline_sync(
     captions_enabled: bool,
     music_enabled: bool,
     progress_callback: Callable[[int, str], None],
+    template_id: str = "minimal_dark",  # Phase 3E.1
 ) -> dict:
     from backend.services.video.exceptions import (
         PipelineConfigError, FFmpegError, VideoGenerationError,
@@ -108,6 +111,7 @@ def _run_pipeline_sync(
         output_caption_path, cleanup_temp, find_music_file,
     )
     from backend.services.video.visual_builder import generate_scene_card, generate_title_card
+    from backend.services.video.templates import get_template  # Phase 3E.1
     from backend.services.video.thumbnail import generate_thumbnail
     from backend.services.video.caption_generator import (
         generate_captions, generate_fallback_captions,
@@ -240,7 +244,12 @@ def _run_pipeline_sync(
 
     # ── 4. Build scene images ──────────────────────────────────────────────
     step(15, "Building scene visuals...")
-    logger.info("[video_pipeline %s] Building scene visuals for %d scenes", job_id, len(scenes))
+    logger.info("[video_pipeline %s] Building scene visuals for %d scenes with template: %s", job_id, len(scenes), template_id)
+    
+    # Get template configuration
+    template = get_template(template_id)
+    logger.info("[video_pipeline %s] Using template: %s (%s)", job_id, template.name, template.description)
+    
     scene_image_paths: list[Path] = []
 
     # Title card (scene 0)
@@ -254,6 +263,7 @@ def _run_pipeline_sync(
             width=width,
             height=height,
             topic_seed=title,
+            template=template,  # Phase 3E.1
         )
         scene_image_paths.append(title_card_path)
         logger.info("[video_pipeline %s] Title card generated: %s", job_id, title_card_path.name)
@@ -273,6 +283,7 @@ def _run_pipeline_sync(
                 width=width,
                 height=height,
                 topic_seed=title,
+                template=template,  # Phase 3E.1
             )
             scene_image_paths.append(card_path)
             logger.info("[video_pipeline %s] Scene card %d generated: %s", job_id, i + 1, card_path.name)

@@ -4,13 +4,11 @@ backend/services/video/visual_builder.py — Pillow-based scene card generator.
 Generates a 1920×1080 PNG for each scene using only Pillow.
 No AI image generation, no external image APIs, no downloads.
 
-Each card shows:
-  - gradient background
-  - scene title (large)
-  - key point / narration excerpt (medium)
-  - subtle scene number indicator
+Phase 3E.1: Template-aware rendering with minimal_dark and quote_fact templates.
 
-The visual style is intentionally minimal and legible.
+Templates:
+  - minimal_dark: Current style (gradient + text)
+  - quote_fact: Large quote emphasis with bold typography
 """
 
 from __future__ import annotations
@@ -105,6 +103,7 @@ def generate_scene_card(
     width: int = 1920,
     height: int = 1080,
     topic_seed: str = "",
+    template: Optional[object] = None,  # Phase 3E.1: TemplateConfig
 ) -> Path:
     """
     Generate a scene card PNG using Pillow only.
@@ -117,10 +116,27 @@ def generate_scene_card(
         output_path:        Where to write the PNG.
         width, height:      Image dimensions.
         topic_seed:         Used to pick a consistent colour palette.
+        template:           TemplateConfig for styling (Phase 3E.1).
 
     Returns:
         Path to the written PNG file.
     """
+    # Phase 3E.1: Get template, default to minimal_dark
+    if template is None:
+        from backend.services.video.templates import get_default_template
+        template = get_default_template()
+
+    # Route to template-specific rendering
+    if template.template_id == "quote_fact":
+        return _generate_quote_fact_scene_card(
+            scene_number, title, narration, visual_description,
+            output_path, width, height, topic_seed, template
+        )
+    else:  # minimal_dark and future templates
+        return _generate_minimal_dark_scene_card(
+            scene_number, title, narration, visual_description,
+            output_path, width, height, topic_seed, template
+        )
     from PIL import Image, ImageDraw
 
     out = Path(output_path)
@@ -218,8 +234,23 @@ def generate_title_card(
     width: int = 1920,
     height: int = 1080,
     topic_seed: str = "",
+    template: Optional[object] = None,  # Phase 3E.1: TemplateConfig
 ) -> Path:
     """Generate an opening title card."""
+    # Phase 3E.1: Get template, default to minimal_dark
+    if template is None:
+        from backend.services.video.templates import get_default_template
+        template = get_default_template()
+
+    # Route to template-specific rendering
+    if template.template_id == "quote_fact":
+        return _generate_quote_fact_title_card(
+            title, hook, output_path, width, height, topic_seed, template
+        )
+    else:  # minimal_dark and future templates
+        return _generate_minimal_dark_title_card(
+            title, hook, output_path, width, height, topic_seed, template
+        )
     from PIL import Image, ImageDraw
 
     out = Path(output_path)
@@ -271,5 +302,315 @@ def generate_title_card(
         )
 
     img.save(str(out), "PNG", optimize=False)
+    logger.debug("Title card written: %s", out)
+    return out
+
+
+# ── Phase 3E.1: Template-specific implementations ───────────────────────────────
+
+def _generate_minimal_dark_title_card(
+    title: str,
+    hook: str,
+    output_path: str | Path,
+    width: int,
+    height: int,
+    topic_seed: str,
+    template: object,
+) -> Path:
+    """Generate minimal_dark title card (existing implementation)."""
+    from PIL import Image, ImageDraw
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    palette = _pick_palette(topic_seed or title)
+    bg_top, bg_bottom, title_col, body_col, accent_col = palette
+
+    img = _make_gradient(width, height, bg_top, bg_bottom)
+    draw = ImageDraw.Draw(img)
+
+    font_title, font_body, font_small = _load_fonts(88, 44, 28)
+
+    # Accent bar
+    draw.rectangle([0, 0, 12, height], fill=accent_col)
+
+    # Central title
+    title_lines = textwrap.wrap(title, width=40)[:3]
+    title_text = "\n".join(title_lines)
+
+    # Estimate vertical centering
+    line_h = 100
+    total_h = len(title_lines) * line_h
+    title_y = (height - total_h) // 2 - 60
+
+    draw.multiline_text(
+        (width // 2, title_y),
+        title_text,
+        fill=title_col,
+        font=font_title,
+        anchor="ma",
+        align="center",
+        spacing=16,
+    )
+
+    # Hook below title
+    if hook:
+        hook_text = hook.strip()[:200]
+        hook_lines = textwrap.wrap(hook_text, width=70)[:3]
+        hook_str = "\n".join(hook_lines)
+        draw.multiline_text(
+            (width // 2, title_y + total_h + 50),
+            hook_str,
+            fill=body_col,
+            font=font_body,
+            anchor="ma",
+            align="center",
+            spacing=10,
+        )
+
+    img.save(str(out), "PNG", optimize=False)
+    logger.debug("Minimal dark title card written: %s", out)
+    return out
+
+
+def _generate_quote_fact_title_card(
+    title: str,
+    hook: str,
+    output_path: str | Path,
+    width: int,
+    height: int,
+    topic_seed: str,
+    template: object,
+) -> Path:
+    """Generate quote_fact title card with bold emphasis."""
+    from PIL import Image, ImageDraw
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    palette = _pick_palette(topic_seed or title)
+    bg_top, bg_bottom, title_col, body_col, accent_col = palette
+
+    img = _make_gradient(width, height, bg_top, bg_bottom)
+    draw = ImageDraw.Draw(img)
+
+    # Bold fonts for quote template
+    font_title, font_body, font_small = _load_fonts(96, 52, 32)
+
+    # Accent bar (thicker for bold style)
+    draw.rectangle([0, 0, 24, height], fill=accent_col)
+
+    # Central title with emphasis
+    title_lines = textwrap.wrap(title, width=36)[:3]
+    title_text = "\n".join(title_lines)
+
+    # Estimate vertical centering
+    line_h = 110
+    total_h = len(title_lines) * line_h
+    title_y = (height - total_h) // 2 - 80
+
+    draw.multiline_text(
+        (width // 2, title_y),
+        title_text,
+        fill=title_col,
+        font=font_title,
+        anchor="ma",
+        align="center",
+        spacing=20,
+    )
+
+    # Hook below title with emphasis
+    if hook:
+        hook_text = hook.strip()[:200]
+        hook_lines = textwrap.wrap(hook_text, width=64)[:3]
+        hook_str = "\n".join(hook_lines)
+        draw.multiline_text(
+            (width // 2, title_y + total_h + 60),
+            hook_str,
+            fill=(*accent_col, 220),
+            font=font_body,
+            anchor="ma",
+            align="center",
+            spacing=14,
+        )
+
+    img.save(str(out), "PNG", optimize=False)
+    logger.debug("Quote fact title card written: %s", out)
+    return out
+
+
+def _generate_minimal_dark_scene_card(
+    scene_number: int,
+    title: str,
+    narration: str,
+    visual_description: str,
+    output_path: str | Path,
+    width: int,
+    height: int,
+    topic_seed: str,
+    template: object,
+) -> Path:
+    """Generate minimal_dark scene card (existing implementation)."""
+    from PIL import Image, ImageDraw
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    palette = _pick_palette(topic_seed or title)
+    bg_top, bg_bottom, title_col, body_col, accent_col = palette
+
+    img = _make_gradient(width, height, bg_top, bg_bottom)
+    draw = ImageDraw.Draw(img)
+
+    # ── Fonts ──────────────────────────────────────────────────────────────
+    font_title  = None
+    font_body   = None
+    font_small  = None
+    font_scene  = None
+
+    try:
+        font_title, font_body, font_small = _load_fonts(72, 40, 28)
+        _, _, font_scene = _load_fonts(72, 40, 24)
+    except Exception:
+        pass  # will use None → Pillow default
+
+    # ── Accent bar (left edge) ─────────────────────────────────────────────
+    bar_w = 12
+    draw.rectangle([0, 0, bar_w, height], fill=accent_col)
+
+    # ── Scene number pill ──────────────────────────────────────────────────
+    pill_text = f"SCENE {scene_number:02d}"
+    pill_x, pill_y = 60, 60
+    pill_pad = 16
+    try:
+        bbox = draw.textbbox((pill_x, pill_y), pill_text, font=font_small)
+        pill_w = bbox[2] - bbox[0] + pill_pad * 2
+        pill_h = bbox[3] - bbox[1] + pill_pad
+    except Exception:
+        pill_w, pill_h = 160, 40
+
+    draw.rounded_rectangle(
+        [pill_x - pill_pad, pill_y - pill_pad // 2,
+         pill_x + pill_w,   pill_y + pill_h],
+        radius=8,
+        fill=(*accent_col, 200),
+    )
+    draw.text((pill_x, pill_y), pill_text, fill=(255, 255, 255), font=font_small)
+
+    # ── Horizontal divider ─────────────────────────────────────────────────
+    div_y = 160
+    draw.line([(60, div_y), (width - 60, div_y)], fill=(*accent_col, 120), width=2)
+
+    # ── Title (script/video title, truncated) ──────────────────────────────
+    title_text = title[:70] + ("…" if len(title) > 70 else "")
+    draw.text((60, 185), title_text, fill=(*title_col, 220), font=font_title)
+
+    # ── Narration excerpt ──────────────────────────────────────────────────
+    # Wrap narration to ~80 chars per line, show first 6 lines
+    excerpt = narration.strip()
+    if len(excerpt) > 500:
+        excerpt = excerpt[:497] + "…"
+    lines = textwrap.wrap(excerpt, width=85)[:6]
+    narration_text = "\n".join(lines)
+
+    body_y = 320
+    draw.multiline_text(
+        (60, body_y),
+        narration_text,
+        fill=body_col,
+        font=font_body,
+        spacing=12,
+    )
+
+    # ── Visual hint (smaller, bottom area) ───────────────────────────────
+    if visual_description and visual_description.strip():
+        hint = f"🎥  {visual_description[:120]}"
+        draw.text(
+            (60, height - 100),
+            hint,
+            fill=(*accent_col, 160),
+            font=font_small,
+        )
+
+    # ── Bottom divider ─────────────────────────────────────────────────────
+    draw.line([(60, height - 130), (width - 60, height - 130)],
+              fill=(*accent_col, 80), width=1)
+
+    img.save(str(out), "PNG", optimize=False)
+    logger.debug("Minimal dark scene card written: %s", out)
+    return out
+
+
+def _generate_quote_fact_scene_card(
+    scene_number: int,
+    title: str,
+    narration: str,
+    visual_description: str,
+    output_path: str | Path,
+    width: int,
+    height: int,
+    topic_seed: str,
+    template: object,
+) -> Path:
+    """Generate quote_fact scene card with large quote emphasis."""
+    from PIL import Image, ImageDraw
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    palette = _pick_palette(topic_seed or title)
+    bg_top, bg_bottom, title_col, body_col, accent_col = palette
+
+    img = _make_gradient(width, height, bg_top, bg_bottom)
+    draw = ImageDraw.Draw(img)
+
+    # Bold fonts for quote template
+    font_title, font_body, font_small = _load_fonts(84, 48, 32)
+    font_quote = _load_fonts(120, 64, 32)[0]  # Extra large for quotes
+
+    # Thicker accent bar
+    bar_w = 24
+    draw.rectangle([0, 0, bar_w, height], fill=accent_col)
+
+    # Large quote marks at top
+    draw.text((width // 2, 80), "❝", fill=(*accent_col, 180), font=font_quote, anchor="ma")
+
+    # Extract key quote from narration (first 2-3 sentences)
+    excerpt = narration.strip()
+    if len(excerpt) > 300:
+        excerpt = excerpt[:297] + "…"
+    quote_lines = textwrap.wrap(excerpt, width=50)[:4]
+    quote_text = "\n".join(quote_lines)
+
+    # Centered quote text
+    quote_y = 180
+    draw.multiline_text(
+        (width // 2, quote_y),
+        quote_text,
+        fill=title_col,
+        font=font_body,
+        anchor="ma",
+        align="center",
+        spacing=18,
+    )
+
+    # Scene number indicator (subtle)
+    pill_text = f"{scene_number}"
+    draw.text((width - 80, height - 80), pill_text, fill=(*accent_col, 120), font=font_title, anchor="ma")
+
+    # Visual hint (bottom)
+    if visual_description and visual_description.strip():
+        hint = f"🎥  {visual_description[:100]}"
+        draw.text(
+            (width // 2, height - 120),
+            hint,
+            fill=(*accent_col, 140),
+            font=font_small,
+            anchor="ma",
+        )
+
+    img.save(str(out), "PNG", optimize=False)
+    logger.debug("Quote fact scene card written: %s", out)
+    return out
     logger.debug("Title card written: %s", out)
     return out

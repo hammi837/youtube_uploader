@@ -86,12 +86,17 @@ desktop.ini
 .coverage
 htmlcov/
 
+# ── Test files (keep tests local, don't commit) ─────────────────────────────
+tests/test_queue_3c.py
+tests/test_queue_3d.py
+tests/test_templates_3e1.py
+tests/test_queue_3b.py
+
 # ── Local scratch / one-off scripts ──────────────────────────────────────────
 test_2c_real.py
 patch_tests.py
 patch_tests2.py
 patch_tests3.py
-tests/test_queue_3c.py
 
 # ── Temporary/invalid token files ────────────────────────────────────────────
 token.json.invalid

@@ -20,8 +20,10 @@ import type {
   UploadJob,
   VideoGenerationRequest,
   VideoJob,
+  VideoTemplate,
   VideoUpdateRequest,
   VideoUpdateResponse,
+  YouTubePlaylist,
 } from '../types/api';
 
 // Central API base URL — configured via Vite env variable
@@ -352,4 +354,28 @@ export async function getQueueStats(): Promise<QueueStats> {
 export async function getJobLogs(jobId: string, limit = 100): Promise<JobLogEntry[]> {
   const res = await fetch(`${BASE_URL}/api/queue/${jobId}/logs?limit=${limit}`);
   return handleResponse<JobLogEntry[]>(res);
+}
+
+// ── Phase 3D: YouTube Playlists ───────────────────────────────────────────────
+
+export async function listPlaylists(): Promise<YouTubePlaylist[]> {
+  const res = await fetch(`${BASE_URL}/api/youtube/playlists`);
+  return handleResponse<YouTubePlaylist[]>(res);
+}
+
+export async function refreshPlaylists(): Promise<YouTubePlaylist[]> {
+  const res = await fetch(`${BASE_URL}/api/youtube/playlists/refresh`, { method: 'POST' });
+  return handleResponse<YouTubePlaylist[]>(res);
+}
+
+// ── Phase 3E.1: Video Templates ───────────────────────────────────────────────
+
+export async function listTemplates(): Promise<VideoTemplate[]> {
+  const res = await fetch(`${BASE_URL}/api/templates`);
+  return handleResponse<VideoTemplate[]>(res);
+}
+
+export async function getTemplate(templateId: string): Promise<VideoTemplate> {
+  const res = await fetch(`${BASE_URL}/api/templates/${templateId}`);
+  return handleResponse<VideoTemplate>(res);
 }
