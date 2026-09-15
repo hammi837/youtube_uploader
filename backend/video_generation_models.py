@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -85,6 +85,9 @@ class VideoGenerationJob(Base):
     
     # Phase 3E.1: Template support
     template_id: Mapped[str] = mapped_column(String(50), nullable=False, default="minimal_dark")
+    
+    # Phase 3E.2: Aspect ratio support
+    aspect_ratio: Mapped[str] = mapped_column(String(10), nullable=False, default="16:9")
 
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -120,6 +123,17 @@ class VideoGenerationRequest(BaseModel):
     music_enabled: bool          = Field(True)
     # Phase 3E.1: Template support
     template_id: str             = Field("minimal_dark", description="Video template ID")
+    # Phase 3E.2: Aspect ratio support
+    aspect_ratio: str            = Field("16:9", description="Aspect ratio: 16:9 or 9:16")
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def validate_aspect_ratio(cls, v: str) -> str:
+        """Validate aspect ratio, fallback to 16:9 for invalid values."""
+        from backend.services.video.aspect_ratio import is_valid_aspect_ratio, DEFAULT_ASPECT_RATIO
+        if not is_valid_aspect_ratio(v):
+            return DEFAULT_ASPECT_RATIO
+        return v
 
 
 class VideoJobResponse(BaseModel):
@@ -142,6 +156,8 @@ class VideoJobResponse(BaseModel):
     music_enabled: bool
     # Phase 3E.1: Template support
     template_id: str
+    # Phase 3E.2: Aspect ratio support
+    aspect_ratio: str
     error_message: Optional[str]
     created_at: datetime
     updated_at: datetime
@@ -174,6 +190,7 @@ def job_to_response(job: VideoGenerationJob) -> VideoJobResponse:
         captions_enabled=job.captions_enabled,
         music_enabled=job.music_enabled,
         template_id=job.template_id,
+        aspect_ratio=getattr(job, "aspect_ratio", "16:9"),  # Phase 3E.2 with fallback
         error_message=job.error_message,
         created_at=job.created_at or now,
         updated_at=job.updated_at or now,

@@ -101,6 +101,7 @@ def create_video_job(
         captions_enabled=body.captions_enabled,
         music_enabled=body.music_enabled,
         template_id=body.template_id,  # Phase 3E.1
+        aspect_ratio=body.aspect_ratio,  # Phase 3E.2
     )
     db.add(job)
     db.commit()
@@ -117,6 +118,7 @@ def create_video_job(
         captions_enabled=body.captions_enabled,
         music_enabled=body.music_enabled,
         template_id=body.template_id,  # Phase 3E.1
+        aspect_ratio=body.aspect_ratio,  # Phase 3E.2
     )
 
     logger.info(
@@ -291,6 +293,7 @@ def _run_video_pipeline_task(
     captions_enabled: bool,
     music_enabled: bool,
     template_id: str = "minimal_dark",  # Phase 3E.1
+    aspect_ratio: str = "16:9",  # Phase 3E.2
 ) -> None:
     """
     Background task: run the pipeline and update the DB record.
@@ -354,6 +357,7 @@ def _run_video_pipeline_task(
                 music_enabled=music_enabled,
                 progress_callback=_update_progress,
                 template_id=template_id,  # Phase 3E.1
+                aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
         )
 
