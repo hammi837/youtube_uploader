@@ -31,6 +31,7 @@ from backend.routers import video_generation  # Phase 2D: Video generation
 from backend.routers import queue    # Phase 3A: Content queue
 from backend.routers import youtube_playlists  # Phase 3D: YouTube playlists
 from backend.routers import templates  # Phase 3E.1: Video templates
+from backend.routers import aspect_ratios  # Phase 3E.2: Aspect ratios
 # Import models so SQLAlchemy registers all tables under Base.metadata
 import backend.content_models  # noqa: F401
 import backend.tts_models       # noqa: F401
@@ -83,6 +84,7 @@ app.include_router(video_generation.router)  # Phase 2D
 app.include_router(queue.router)           # Phase 3A
 app.include_router(youtube_playlists.router)  # Phase 3D
 app.include_router(templates.router)        # Phase 3E.1
+app.include_router(aspect_ratios.router)    # Phase 3E.2
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
