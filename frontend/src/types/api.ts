@@ -182,6 +182,10 @@ export interface VideoGenerationRequest {
   fps?: number;
   captions_enabled?: boolean;
   music_enabled?: boolean;
+  // Phase 3E.1: Template support
+  template_id?: string;
+  // Phase 3E.2: Aspect ratio support
+  aspect_ratio?: string;
 }
 
 export interface VideoJob {
@@ -200,6 +204,8 @@ export interface VideoJob {
   music_enabled: boolean;
   // Phase 3E.1: Template support
   template_id: string;
+  // Phase 3E.2: Aspect ratio support
+  aspect_ratio: string;
   error_message: string | null;
   created_at: string;
   updated_at: string;
@@ -282,6 +288,18 @@ export interface QueueJob {
   youtube_studio_url: string | null;
   // Phase 3E.1: Template support
   template_id: string;
+  // Phase 3E.2: Aspect ratio support
+  aspect_ratio: string;
+}
+
+// ── Phase 3E.2: Aspect Ratio ───────────────────────────────────────────────────
+
+export interface AspectRatio {
+  aspect_ratio: string;
+  width: number;
+  height: number;
+  label: string;
+  description: string;
 }
 
 // ── Phase 3D: YouTube Playlist ───────────────────────────────────────────────
@@ -315,6 +333,8 @@ export interface BulkQueueRequest {
   custom_tags?: string[];
   // Phase 3E.1: Template support
   template_id?: string;
+  // Phase 3E.2: Aspect ratio support
+  aspect_ratio?: string;
 }
 
 export interface BulkQueueResponse {

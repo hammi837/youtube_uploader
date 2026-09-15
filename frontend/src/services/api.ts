@@ -1,5 +1,6 @@
 import type {
   AudioRecord,
+  AspectRatio,
   AuthStatus,
   BulkQueueRequest,
   BulkQueueResponse,
@@ -378,4 +379,16 @@ export async function listTemplates(): Promise<VideoTemplate[]> {
 export async function getTemplate(templateId: string): Promise<VideoTemplate> {
   const res = await fetch(`${BASE_URL}/api/templates/${templateId}`);
   return handleResponse<VideoTemplate>(res);
+}
+
+// ── Phase 3E.2: Aspect Ratios ───────────────────────────────────────────────────
+
+export async function listAspectRatios(): Promise<AspectRatio[]> {
+  const res = await fetch(`${BASE_URL}/api/aspect-ratios`);
+  return handleResponse<AspectRatio[]>(res);
+}
+
+export async function getAspectRatio(aspectRatio: string): Promise<AspectRatio> {
+  const res = await fetch(`${BASE_URL}/api/aspect-ratios/${aspectRatio}`);
+  return handleResponse<AspectRatio>(res);
 }
