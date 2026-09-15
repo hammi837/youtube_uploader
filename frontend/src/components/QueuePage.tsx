@@ -9,6 +9,7 @@ import {
   getQueueHealth,
   getQueueStats,
   getQueueStatus,
+  listAspectRatios,
   listQueueJobs,
   listPlaylists,
   listTemplates,
@@ -22,6 +23,7 @@ import {
   stopQueue,
 } from '../services/api';
 import type {
+  AspectRatio,
   CleanupResult,
   JobLogEntry,
   QueueHealth,
@@ -149,6 +151,9 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   // Phase 3E.1: Template selection
   const [selectedTemplate, setSelectedTemplate] = useState('minimal_dark');
   const [templates, setTemplates] = useState<VideoTemplate[]>([]);
+  // Phase 3E.2: Aspect ratio selection
+  const [selectedAspectRatio, setSelectedAspectRatio] = useState('16:9');
+  const [aspectRatios, setAspectRatios] = useState<AspectRatio[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState('');
   const [preview, setPreview]       = useState<string[]>([]);
@@ -177,6 +182,11 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
     loadTemplates();
   }, []);
 
+  // Phase 3E.2: Load aspect ratios on mount
+  useEffect(() => {
+    loadAspectRatios();
+  }, []);
+
   async function loadPlaylists() {
     try {
       const data = await listPlaylists();
@@ -192,6 +202,15 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
       setTemplates(data);
     } catch (err) {
       console.error('Failed to load templates:', err);
+    }
+  }
+
+  async function loadAspectRatios() {
+    try {
+      const data = await listAspectRatios();
+      setAspectRatios(data);
+    } catch (err) {
+      console.error('Failed to load aspect ratios:', err);
     }
   }
 
@@ -221,6 +240,7 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         custom_description: customDescription || undefined,
         custom_tags: tagsArray.length > 0 ? tagsArray : undefined,
         template_id: selectedTemplate,  // Phase 3E.1
+        aspect_ratio: selectedAspectRatio,  // Phase 3E.2
       });
       onSubmitted();
     } catch (err) {
@@ -275,6 +295,23 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         </select>
         <div className="form-hint form-hint--info">
           Template controls visual style, typography, and layout. Minimal Dark is the original style.
+        </div>
+      </div>
+
+      {/* Phase 3E.2: Aspect Ratio Selection */}
+      <div className="form-group">
+        <label className="form-label">📐 Aspect Ratio</label>
+        <select className="form-select" value={selectedAspectRatio}
+          onChange={e => setSelectedAspectRatio(e.target.value)}
+          disabled={submitting}>
+          {aspectRatios.map(ar => (
+            <option key={ar.aspect_ratio} value={ar.aspect_ratio}>
+              {ar.label} ({ar.width}x{ar.height})
+            </option>
+          ))}
+        </select>
+        <div className="form-hint form-hint--info">
+          16:9 for standard YouTube videos, 9:16 for YouTube Shorts.
         </div>
       </div>
 
@@ -691,6 +728,7 @@ function QueueJobCard({
         <span>{fmtDur(job.target_duration_seconds)}</span>
         <span>{job.language.toUpperCase()}</span>
         <span>{job.tone}</span>
+        <span>{job.aspect_ratio === '9:16' ? '📱 Shorts' : '📺 16:9'}</span>
         {job.retry_count > 0 && (
           <span style={{color:'var(--color-warning)'}}>
             Retry {job.retry_count}/{job.max_retries}
