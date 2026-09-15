@@ -154,6 +154,9 @@ class ContentQueueJob(Base):
     # ── Phase 3E.1: Template support ───────────────────────────────────────────
     template_id: Mapped[str] = mapped_column(String(50), nullable=False, default="minimal_dark")
 
+    # ── Phase 3E.2: Aspect ratio support ───────────────────────────────────────
+    aspect_ratio: Mapped[str] = mapped_column(String(10), nullable=False, default="16:9")
+
     # ── Error tracking ─────────────────────────────────────────────────────
     error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     last_error_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -238,6 +241,9 @@ class BulkQueueRequest(BaseModel):
     
     # ── Phase 3E.1: Template support ───────────────────────────────────────
     template_id: str = Field("minimal_dark", description="Video template ID")
+    
+    # ── Phase 3E.2: Aspect ratio support ───────────────────────────────────────
+    aspect_ratio: str = Field("16:9", description="Aspect ratio: 16:9 or 9:16")
 
     @field_validator("topics")
     @classmethod
@@ -280,6 +286,15 @@ class BulkQueueRequest(BaseModel):
             if len(tag) > 100:
                 raise ValueError(f"Tag '{tag[:20]}...' exceeds 100 character limit")
         return v[:30]  # Max 30 tags
+
+    @field_validator("aspect_ratio")
+    @classmethod
+    def validate_aspect_ratio(cls, v: str) -> str:
+        """Validate aspect ratio, fallback to 16:9 for invalid values."""
+        from backend.services.video.aspect_ratio import is_valid_aspect_ratio, DEFAULT_ASPECT_RATIO
+        if not is_valid_aspect_ratio(v):
+            return DEFAULT_ASPECT_RATIO
+        return v
 
 
 class QueueJobResponse(BaseModel):
@@ -329,6 +344,9 @@ class QueueJobResponse(BaseModel):
     
     # ── Phase 3E.1: Template support ───────────────────────────────────────
     template_id: str = "minimal_dark"
+    
+    # ── Phase 3E.2: Aspect ratio support ───────────────────────────────────────
+    aspect_ratio: str = "16:9"
 
     model_config = {"from_attributes": True}
 
@@ -423,6 +441,8 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         youtube_studio_url=youtube_studio_url,
         # Phase 3E.1: Template support
         template_id=getattr(job, "template_id", "minimal_dark"),
+        # Phase 3E.2: Aspect ratio support
+        aspect_ratio=getattr(job, "aspect_ratio", "16:9"),
     )
 
 

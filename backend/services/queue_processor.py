@@ -688,7 +688,14 @@ def _stage_generate_video(
             # Get template_id from queue job
             qj_template = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
             template_id = qj_template.template_id if qj_template else "minimal_dark"
-            
+
+            # Phase 3E.2: Get aspect_ratio from queue job
+            aspect_ratio = qj_template.aspect_ratio if qj_template else "16:9"
+
+            # Phase 3E.2: Calculate dimensions from aspect ratio
+            from backend.services.video.aspect_ratio import get_dimensions
+            width, height = get_dimensions(aspect_ratio)
+
             vj = VideoGenerationJob(
                 id=vj_id,
                 content_project_id=content_project_id,
@@ -696,12 +703,13 @@ def _stage_generate_video(
                 status=VideoJobStatus.PREPARING,
                 progress=0,
                 current_step="Starting…",
-                width=1920,
-                height=1080,
+                width=width,  # Phase 3E.2: calculated from aspect ratio
+                height=height,  # Phase 3E.2: calculated from aspect ratio
                 fps=30,
                 captions_enabled=True,
                 music_enabled=True,
                 template_id=template_id,  # Phase 3E.1
+                aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
             db.add(vj)
 
@@ -714,18 +722,20 @@ def _stage_generate_video(
         finally:
             db.close()
 
-        logger.info("[queue_video %s] Starting video pipeline: job_id=%s, project=%s, audio=%s", job_id, vj_id, content_project_id, audio_id)
+        logger.info("[queue_video %s] Starting video pipeline: job_id=%s, project=%s, audio=%s, aspect_ratio=%s, dimensions=%dx%d", 
+                    job_id, vj_id, content_project_id, audio_id, aspect_ratio, width, height)
         coro_or_result = run_pipeline(
             job_id=vj_id,
             content_project_id=content_project_id,
             audio_id=audio_id,
-            width=1920,
-            height=1080,
+            width=width,
+            height=height,
             fps=30,
             captions_enabled=True,
             music_enabled=True,
             progress_callback=_progress_cb,
             template_id=template_id,  # Phase 3E.1
+            aspect_ratio=aspect_ratio,  # Phase 3E.2
         )
         if asyncio.iscoroutine(coro_or_result):
             result = asyncio.run(coro_or_result)
