@@ -65,6 +65,7 @@ async def run_pipeline(
     music_enabled: bool,
     progress_callback: Callable[[int, str], None],
     template_id: str = "minimal_dark",  # Phase 3E.1
+    aspect_ratio: str = "16:9",  # Phase 3E.2
 ) -> dict:
     """
     Run the full video generation pipeline in a thread executor.
@@ -86,6 +87,7 @@ async def run_pipeline(
         music_enabled,
         progress_callback,
         template_id,  # Phase 3E.1
+        aspect_ratio,  # Phase 3E.2
     )
 
 
@@ -102,6 +104,7 @@ def _run_pipeline_sync(
     music_enabled: bool,
     progress_callback: Callable[[int, str], None],
     template_id: str = "minimal_dark",  # Phase 3E.1
+    aspect_ratio: str = "16:9",  # Phase 3E.2
 ) -> dict:
     from backend.services.video.exceptions import (
         PipelineConfigError, FFmpegError, VideoGenerationError,
@@ -264,6 +267,7 @@ def _run_pipeline_sync(
             height=height,
             topic_seed=title,
             template=template,  # Phase 3E.1
+            aspect_ratio=aspect_ratio,  # Phase 3E.2
         )
         scene_image_paths.append(title_card_path)
         logger.info("[video_pipeline %s] Title card generated: %s", job_id, title_card_path.name)
@@ -284,6 +288,7 @@ def _run_pipeline_sync(
                 height=height,
                 topic_seed=title,
                 template=template,  # Phase 3E.1
+                aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
             scene_image_paths.append(card_path)
             logger.info("[video_pipeline %s] Scene card %d generated: %s", job_id, i + 1, card_path.name)
