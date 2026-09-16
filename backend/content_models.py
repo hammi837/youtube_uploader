@@ -154,6 +154,11 @@ class Scene(BaseModel):
     narration: str
     visual_description: str
     estimated_duration_seconds: int = Field(ge=1)
+    # Phase 3E.3: Background visual support
+    background_type: Optional[str] = Field(None, description="Background type: gradient, solid_color, local_image, local_video, placeholder")
+    background_path: Optional[str] = Field(None, description="Path to local background asset")
+    background_color: Optional[str] = Field(None, description="Solid color for solid_color background")
+    background_fit: Optional[str] = Field("cover", description="How to fit background: cover, contain, fill")
 
     model_config = {"from_attributes": True}
 

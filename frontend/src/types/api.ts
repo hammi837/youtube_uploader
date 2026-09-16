@@ -290,6 +290,11 @@ export interface QueueJob {
   template_id: string;
   // Phase 3E.2: Aspect ratio support
   aspect_ratio: string;
+  // Phase 3E.3: Background visual support
+  background_type: string | null;
+  background_path: string | null;
+  background_color: string | null;
+  background_fit: string | null;
 }
 
 // ── Phase 3E.2: Aspect Ratio ───────────────────────────────────────────────────
@@ -335,6 +340,11 @@ export interface BulkQueueRequest {
   template_id?: string;
   // Phase 3E.2: Aspect ratio support
   aspect_ratio?: string;
+  // Phase 3E.3: Background visual support
+  background_type?: string;
+  background_path?: string;
+  background_color?: string;
+  background_fit?: string;
 }
 
 export interface BulkQueueResponse {

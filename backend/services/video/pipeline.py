@@ -125,6 +125,10 @@ def _run_pipeline_sync(
         mix_audio, burn_captions, final_encode, probe_video,
         _get_duration,
     )
+    from backend.services.video.background_processor import apply_background_to_scene  # Phase 3E.3
+    from backend.services.video.background_config import get_background_config  # Phase 3E.3
+    from backend.services.video.video_background_processor import apply_video_background_to_scene  # Phase 3E.4
+    from backend.services.video.video_asset_discovery import get_video_by_path  # Phase 3E.4
     from backend.services.media.ffmpeg import check_ffmpeg, FFmpegNotFoundError
 
     t_start = time.perf_counter()
@@ -290,6 +294,18 @@ def _run_pipeline_sync(
                 template=template,  # Phase 3E.1
                 aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
+            
+            # Phase 3E.3: Apply image/solid color background if configured in scene
+            scene_bg_type = scene.get("background_type")
+            if scene_bg_type and scene_bg_type != "local_video":
+                scene_bg_config = get_background_config(
+                    background_type=scene_bg_type,
+                    background_path=scene.get("background_path"),
+                    background_color=scene.get("background_color"),
+                    background_fit=scene.get("background_fit", "cover"),
+                )
+                card_path = apply_background_to_scene(card_path, scene_bg_config, width, height)
+            
             scene_image_paths.append(card_path)
             logger.info("[video_pipeline %s] Scene card %d generated: %s", job_id, i + 1, card_path.name)
         except Exception as exc:
@@ -319,14 +335,56 @@ def _run_pipeline_sync(
 
     for i, (img_path, dur) in enumerate(zip(scene_image_paths, durations)):
         clip_path = temp_dir / f"clip_{i:03d}.mp4"
-        sc = SceneClip(
-            scene_number=i + 1,
-            image_path=img_path,
-            duration_seconds=dur,
-        )
-        build_scene_clip(sc, clip_path, width, height)
-        clip_paths.append(clip_path)
-        logger.info("[video_pipeline %s] Clip %d/%d built: %.1fs", job_id, i + 1, n_clips, dur)
+        
+        # Phase 3E.4: Check if scene has video background
+        scene = scenes[i] if i < len(scenes) else {}
+        scene_bg_type = scene.get("background_type")
+        
+        if scene_bg_type == "local_video" and scene.get("background_path"):
+            # Apply video background during clip building
+            video_path = Path(scene["background_path"])
+            scene_bg_config = get_background_config(
+                background_type=scene_bg_type,
+                background_path=scene.get("background_path"),
+                background_fit=scene.get("background_fit", "cover"),
+                background_loop=scene.get("background_loop", True),
+                background_start_time=scene.get("background_start_time", 0.0),
+            )
+            
+            video_clip = apply_video_background_to_scene(
+                img_path,
+                video_path,
+                clip_path,
+                dur,
+                width,
+                height,
+                scene_bg_config,
+            )
+            
+            if video_clip:
+                clip_paths.append(video_clip)
+                logger.info("[video_pipeline %s] Video background clip %d/%d built: %.1fs", job_id, i + 1, n_clips, dur)
+            else:
+                # Fallback to standard clip if video processing fails
+                sc = SceneClip(
+                    scene_number=i + 1,
+                    image_path=img_path,
+                    duration_seconds=dur,
+                )
+                build_scene_clip(sc, clip_path, width, height)
+                clip_paths.append(clip_path)
+                logger.warning("[video_pipeline %s] Video background failed for scene %d, using fallback", job_id, i + 1)
+        else:
+            # Standard image-based clip
+            sc = SceneClip(
+                scene_number=i + 1,
+                image_path=img_path,
+                duration_seconds=dur,
+            )
+            build_scene_clip(sc, clip_path, width, height)
+            clip_paths.append(clip_path)
+            logger.info("[video_pipeline %s] Clip %d/%d built: %.1fs", job_id, i + 1, n_clips, dur)
+        
         # Update progress between 35 and 55
         pct = 35 + int((i + 1) / n_clips * 20)
         step(pct, f"Built clip {i + 1}/{n_clips}...")
