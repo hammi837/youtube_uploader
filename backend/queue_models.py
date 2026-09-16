@@ -157,6 +157,12 @@ class ContentQueueJob(Base):
     # ── Phase 3E.2: Aspect ratio support ───────────────────────────────────────
     aspect_ratio: Mapped[str] = mapped_column(String(10), nullable=False, default="16:9")
 
+    # ── Phase 3E.3: Background visual support ──────────────────────────────────
+    background_type: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+    background_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    background_color: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    background_fit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
     # ── Error tracking ─────────────────────────────────────────────────────
     error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     last_error_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -244,6 +250,12 @@ class BulkQueueRequest(BaseModel):
     
     # ── Phase 3E.2: Aspect ratio support ───────────────────────────────────────
     aspect_ratio: str = Field("16:9", description="Aspect ratio: 16:9 or 9:16")
+    
+    # ── Phase 3E.3: Background visual support ──────────────────────────────────
+    background_type: Optional[str] = Field(None, description="Background type: gradient, solid_color, local_image, local_video, placeholder")
+    background_path: Optional[str] = Field(None, description="Path to local background asset")
+    background_color: Optional[str] = Field(None, description="Solid color for solid_color background")
+    background_fit: Optional[str] = Field("cover", description="How to fit background: cover, contain, fill")
 
     @field_validator("topics")
     @classmethod
@@ -347,6 +359,12 @@ class QueueJobResponse(BaseModel):
     
     # ── Phase 3E.2: Aspect ratio support ───────────────────────────────────────
     aspect_ratio: str = "16:9"
+    
+    # ── Phase 3E.3: Background visual support ──────────────────────────────────
+    background_type: Optional[str] = None
+    background_path: Optional[str] = None
+    background_color: Optional[str] = None
+    background_fit: Optional[str] = "cover"
 
     model_config = {"from_attributes": True}
 
@@ -443,6 +461,11 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         template_id=getattr(job, "template_id", "minimal_dark"),
         # Phase 3E.2: Aspect ratio support
         aspect_ratio=getattr(job, "aspect_ratio", "16:9"),
+        # Phase 3E.3: Background visual support
+        background_type=getattr(job, "background_type", None),
+        background_path=getattr(job, "background_path", None),
+        background_color=getattr(job, "background_color", None),
+        background_fit=getattr(job, "background_fit", "cover"),
     )
 
 

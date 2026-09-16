@@ -144,6 +144,13 @@ def create_queue_jobs(
             custom_tags=json.dumps(body.custom_tags) if body.custom_tags else None,
             # Phase 3E.1: Template support
             template_id=body.template_id,
+            # Phase 3E.2: Aspect ratio support
+            aspect_ratio=body.aspect_ratio,
+            # Phase 3E.3/3E.4: Background visual support
+            background_type=body.background_type,
+            background_path=body.background_path,
+            background_color=body.background_color,
+            background_fit=body.background_fit,
         )
         db.add(job)
         jobs.append(job)

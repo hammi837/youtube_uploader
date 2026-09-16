@@ -154,6 +154,8 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   // Phase 3E.2: Aspect ratio selection
   const [selectedAspectRatio, setSelectedAspectRatio] = useState('16:9');
   const [aspectRatios, setAspectRatios] = useState<AspectRatio[]>([]);
+  // Phase 3E.3: Background selection
+  const [selectedBackground, setSelectedBackground] = useState('gradient');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState('');
   const [preview, setPreview]       = useState<string[]>([]);
@@ -241,6 +243,7 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         custom_tags: tagsArray.length > 0 ? tagsArray : undefined,
         template_id: selectedTemplate,  // Phase 3E.1
         aspect_ratio: selectedAspectRatio,  // Phase 3E.2
+        background_type: selectedBackground !== 'gradient' ? selectedBackground : undefined,  // Phase 3E.3
       });
       onSubmitted();
     } catch (err) {
@@ -312,6 +315,22 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         </select>
         <div className="form-hint form-hint--info">
           16:9 for standard YouTube videos, 9:16 for YouTube Shorts.
+        </div>
+      </div>
+
+      {/* Phase 3E.3: Background Selection */}
+      <div className="form-group">
+        <label className="form-label">🎨 Background</label>
+        <select className="form-select" value={selectedBackground}
+          onChange={e => setSelectedBackground(e.target.value)}
+          disabled={submitting}>
+          <option value="gradient">🌈 Default Gradient</option>
+          <option value="solid_color">🎨 Solid Color</option>
+          <option value="local_image">🖼️ Local Image</option>
+          <option value="local_video">🎬 Local Video</option>
+        </select>
+        <div className="form-hint form-hint--info">
+          Gradient is the default. Local images/videos require files in assets/backgrounds/.
         </div>
       </div>
 

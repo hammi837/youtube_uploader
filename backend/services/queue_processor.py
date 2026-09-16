@@ -696,6 +696,12 @@ def _stage_generate_video(
             from backend.services.video.aspect_ratio import get_dimensions
             width, height = get_dimensions(aspect_ratio)
 
+            # Phase 3E.4: Get background settings from queue job
+            background_type = qj_template.background_type if qj_template else None
+            background_path = qj_template.background_path if qj_template else None
+            background_color = qj_template.background_color if qj_template else None
+            background_fit = qj_template.background_fit if qj_template else "cover"
+
             vj = VideoGenerationJob(
                 id=vj_id,
                 content_project_id=content_project_id,
@@ -721,6 +727,30 @@ def _stage_generate_video(
             logger.info("[queue_video %s] Video job created and linked: %s", job_id, vj_id)
         finally:
             db.close()
+
+        # Phase 3E.4: Propagate background settings to scenes if configured at job level
+        if background_type:
+            from backend.content_models import ContentProject
+            db_project = SessionLocal()
+            try:
+                project = db_project.query(ContentProject).filter(
+                    ContentProject.id == content_project_id
+                ).first()
+                if project and project.script:
+                    scenes = project.script.scenes_as_list()
+                    # Add background settings to each scene
+                    for scene in scenes:
+                        if not scene.get("background_type"):  # Don't override scene-specific settings
+                            scene["background_type"] = background_type
+                            scene["background_path"] = background_path
+                            scene["background_color"] = background_color
+                            scene["background_fit"] = background_fit
+                    # Update the script with modified scenes
+                    project.script.scenes_json = json.dumps(scenes)
+                    db_project.commit()
+                    logger.info("[queue_video %s] Applied job-level background settings to %d scenes", job_id, len(scenes))
+            finally:
+                db_project.close()
 
         logger.info("[queue_video %s] Starting video pipeline: job_id=%s, project=%s, audio=%s, aspect_ratio=%s, dimensions=%dx%d", 
                     job_id, vj_id, content_project_id, audio_id, aspect_ratio, width, height)
