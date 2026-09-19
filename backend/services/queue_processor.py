@@ -729,8 +729,14 @@ def _stage_generate_video(
             db.close()
 
         # Phase 3E.4: Propagate background settings to scenes if configured at job level
+        # Phase 3E.5: Handle auto-selection for local_video_auto
+        # Phase 3F.1: Handle auto-selection for local_image_auto
         if background_type:
             from backend.content_models import ContentProject
+            from backend.services.video.video_asset_discovery import select_auto_backgrounds
+            from backend.services.video.image_asset_discovery import select_auto_images
+            from backend.services.video.background_config import BackgroundType
+
             db_project = SessionLocal()
             try:
                 project = db_project.query(ContentProject).filter(
@@ -738,17 +744,81 @@ def _stage_generate_video(
                 ).first()
                 if project and project.script:
                     scenes = project.script.scenes_as_list()
-                    # Add background settings to each scene
-                    for scene in scenes:
-                        if not scene.get("background_type"):  # Don't override scene-specific settings
-                            scene["background_type"] = background_type
-                            scene["background_path"] = background_path
-                            scene["background_color"] = background_color
-                            scene["background_fit"] = background_fit
+
+                    # Phase 3E.5: Auto-selection mode for videos
+                    if background_type == BackgroundType.LOCAL_VIDEO_AUTO.value:
+                        # Get auto-selected video paths for each scene
+                        auto_paths = select_auto_backgrounds(
+                            job_id=job_id,
+                            scene_count=len(scenes),
+                            aspect_ratio=aspect_ratio,
+                        )
+
+                        # Apply auto-selected paths to scenes
+                        for i, scene in enumerate(scenes):
+                            # Override scenes with local_video_auto or no background_type
+                            # Don't override other explicit scene-specific settings
+                            if not scene.get("background_type") or scene.get("background_type") == BackgroundType.LOCAL_VIDEO_AUTO.value:
+                                video_path = auto_paths[i] if i < len(auto_paths) else None
+                                if video_path:
+                                    # Valid video available
+                                    scene["background_type"] = BackgroundType.LOCAL_VIDEO.value
+                                    scene["background_path"] = video_path
+                                    scene["background_color"] = background_color
+                                    scene["background_fit"] = background_fit
+                                else:
+                                    # Fallback to gradient
+                                    scene["background_type"] = BackgroundType.GRADIENT.value
+                                    scene["background_path"] = None
+                                    scene["background_color"] = background_color
+                                    scene["background_fit"] = background_fit
+
+                        logger.info("[queue_video %s] Applied auto-selected video backgrounds to %d scenes", job_id, len(scenes))
+                    
+                    # Phase 3F.1: Auto-selection mode for images
+                    elif background_type == BackgroundType.LOCAL_IMAGE_AUTO.value:
+                        # Get auto-selected image paths for each scene
+                        auto_paths = select_auto_images(
+                            job_id=job_id,
+                            scene_count=len(scenes),
+                            aspect_ratio=aspect_ratio,
+                        )
+
+                        # Apply auto-selected paths to scenes
+                        for i, scene in enumerate(scenes):
+                            # Override scenes with local_image_auto or no background_type
+                            # Don't override other explicit scene-specific settings
+                            if not scene.get("background_type") or scene.get("background_type") == BackgroundType.LOCAL_IMAGE_AUTO.value:
+                                image_path = auto_paths[i] if i < len(auto_paths) else None
+                                if image_path:
+                                    # Valid image available
+                                    scene["background_type"] = BackgroundType.LOCAL_IMAGE.value
+                                    scene["background_path"] = image_path
+                                    scene["background_color"] = background_color
+                                    scene["background_fit"] = background_fit
+                                else:
+                                    # Fallback to gradient
+                                    scene["background_type"] = BackgroundType.GRADIENT.value
+                                    scene["background_path"] = None
+                                    scene["background_color"] = background_color
+                                    scene["background_fit"] = background_fit
+
+                        logger.info("[queue_video %s] Applied auto-selected image backgrounds to %d scenes", job_id, len(scenes))
+                    
+                    else:
+                        # Phase 3E.4: Standard propagation (same background for all scenes)
+                        for scene in scenes:
+                            if not scene.get("background_type"):  # Don't override scene-specific settings
+                                scene["background_type"] = background_type
+                                scene["background_path"] = background_path
+                                scene["background_color"] = background_color
+                                scene["background_fit"] = background_fit
+
+                        logger.info("[queue_video %s] Applied job-level background settings to %d scenes", job_id, len(scenes))
+
                     # Update the script with modified scenes
                     project.script.scenes_json = json.dumps(scenes)
                     db_project.commit()
-                    logger.info("[queue_video %s] Applied job-level background settings to %d scenes", job_id, len(scenes))
             finally:
                 db_project.close()
 
