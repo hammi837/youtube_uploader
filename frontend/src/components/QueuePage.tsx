@@ -327,10 +327,12 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
           <option value="gradient">🌈 Default Gradient</option>
           <option value="solid_color">🎨 Solid Color</option>
           <option value="local_image">🖼️ Local Image</option>
+          <option value="local_image_auto">🤖 Auto (Local Image)</option>
           <option value="local_video">🎬 Local Video</option>
+          <option value="local_video_auto">🤖 Auto (Local Video)</option>
         </select>
         <div className="form-hint form-hint--info">
-          Gradient is the default. Local images/videos require files in assets/backgrounds/.
+          Auto selects from local images/videos. Local images/videos require files in assets/backgrounds/.
         </div>
       </div>
 
