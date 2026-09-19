@@ -22,7 +22,9 @@ class BackgroundType(str, Enum):
     GRADIENT = "gradient"  # Existing gradient background (default)
     SOLID_COLOR = "solid_color"  # Solid color background
     LOCAL_IMAGE = "local_image"  # Local image file
+    LOCAL_IMAGE_AUTO = "local_image_auto"  # Automatic local image selection (Phase 3F.1)
     LOCAL_VIDEO = "local_video"  # Local video clip
+    LOCAL_VIDEO_AUTO = "local_video_auto"  # Automatic local video selection (Phase 3E.5)
     PLACEHOLDER = "placeholder"  # Generated placeholder background
 
 
@@ -78,7 +80,7 @@ def get_background_config(
     Create a background configuration with validation.
 
     Args:
-        background_type: Type of background (gradient, solid_color, local_image, local_video, placeholder)
+        background_type: Type of background (gradient, solid_color, local_image, local_video, local_video_auto, placeholder)
         background_path: Path to local asset file
         background_color: Solid color for solid_color type
         background_fit: How to fit background content (cover, contain, fill)
