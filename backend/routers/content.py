@@ -166,6 +166,15 @@ def generate_script_endpoint(
 
         research, script = generate_script(body)
 
+        # Phase 3F.2: Generate visual prompts for scenes
+        from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes
+        script.scenes = add_visual_prompts_to_scenes(
+            script.scenes,
+            aspect_ratio=body.aspect_ratio if hasattr(body, 'aspect_ratio') else "16:9",
+            visual_style="cinematic",
+            use_batch=True,
+        )
+
         # Update status to generating (script is validated, now persisting)
         project.status = ContentStatus.GENERATING
         db.commit()
