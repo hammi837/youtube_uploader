@@ -170,7 +170,7 @@ def generate_script_endpoint(
         from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes
         script.scenes = add_visual_prompts_to_scenes(
             script.scenes,
-            aspect_ratio=body.aspect_ratio if hasattr(body, 'aspect_ratio') else "16:9",
+            aspect_ratio="16:9",  # Content API defaults to 16:9
             visual_style="cinematic",
             use_batch=True,
         )
