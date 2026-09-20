@@ -29,8 +29,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, Thread
 from typing import Optional
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+# Load environment variables at module level for queue processor
+load_dotenv()
 
 # ── Module-level worker state ─────────────────────────────────────────────────
 # These are module-level so they survive across requests within one process.
@@ -283,7 +287,7 @@ def _run_full_pipeline(job_id: str) -> None:
             )
             log_job(job_id, "YouTube upload started (upload-only retry).", stage="youtube")
             try:
-                _stage_youtube(job_id, existing_video_job_id, skip_video_upload=True)
+                _stage_youtube(job_id, existing_video_job_id)
             except YouTubeAuthError as auth_exc:
                 _handle_youtube_auth_error(job_id, auth_exc)
                 return
@@ -423,7 +427,17 @@ def _stage_research_and_script(job_id: str) -> str:
             stage_name="research+script",
         )
 
-        _update_job(job_id, stage="Saving script…", progress=12)
+        # Phase 3F.2: Generate visual prompts for scenes
+        _update_job(job_id, stage="Generating visual prompts…", progress=12)
+        from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes
+        script.scenes = add_visual_prompts_to_scenes(
+            script.scenes,
+            aspect_ratio=job.aspect_ratio,
+            visual_style="cinematic",
+            use_batch=True,
+        )
+
+        _update_job(job_id, stage="Saving script…", progress=15)
 
         # Persist project + sources + script (same as routers/content.py)
         project = ContentProject(
@@ -890,7 +904,7 @@ def _stage_generate_video(
     return video_job_id_ref[0] if video_job_id_ref else ""
 
 
-def _stage_youtube(job_id: str, video_job_id: str, skip_video_upload: bool = False) -> None:
+def _stage_youtube(job_id: str, video_job_id: str) -> None:
     """
     Upload video + thumbnail to YouTube, then set schedule if configured.
     Updates individual sub-status flags.
@@ -898,7 +912,6 @@ def _stage_youtube(job_id: str, video_job_id: str, skip_video_upload: bool = Fal
     Args:
         job_id: Queue job ID
         video_job_id: Video generation job ID
-        skip_video_upload: If True, skip video upload (for upload-only retry path)
 
     Raises:
         YouTubeAuthError: On invalid_grant.  Caller must mark the job as
@@ -968,8 +981,8 @@ def _stage_youtube(job_id: str, video_job_id: str, skip_video_upload: bool = Fal
         import youtube as yt_core
         from googleapiclient.errors import HttpError
 
-        # ── Upload video (skip if already uploaded or skip_video_upload is True) ─
-        if job.youtube_video_id or skip_video_upload:
+        # ── Upload video (skip if already uploaded to YouTube) ─
+        if job.youtube_video_id:
             # Video upload succeeded on a previous attempt; skip re-upload
             video_id = job.youtube_video_id
             logger.info(
