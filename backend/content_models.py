@@ -196,6 +196,7 @@ class ScriptRequest(BaseModel):
     tone: str            = Field("informative", max_length=50)
     target_duration_seconds: int = Field(180, ge=30, le=3600)
     scene_count: int     = Field(12, ge=3, le=30)
+    aspect_ratio: str    = Field("16:9", pattern=r"^(16:9|9:16)$")
 
     @field_validator("topic")
     @classmethod
