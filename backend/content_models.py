@@ -159,6 +159,8 @@ class Scene(BaseModel):
     background_path: Optional[str] = Field(None, description="Path to local background asset")
     background_color: Optional[str] = Field(None, description="Solid color for solid_color background")
     background_fit: Optional[str] = Field("cover", description="How to fit background: cover, contain, fill")
+    # Phase 3F.2: Visual prompt for image/video generation
+    visual_prompt: Optional[str] = Field(None, description="Visual prompt for future image/video generation systems")
 
     model_config = {"from_attributes": True}
 
