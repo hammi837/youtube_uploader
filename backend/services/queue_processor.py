@@ -830,7 +830,8 @@ def _stage_generate_video(
                         # Compute a monotonic deadline so slow/repeated timeouts can't
                         # block the queue worker indefinitely.
                         import time as _time
-                        _ai_job_timeout = float(os.getenv("AI_IMAGE_JOB_TIMEOUT_S", "600"))
+                        import os as _os_ai
+                        _ai_job_timeout = float(_os_ai.getenv("AI_IMAGE_JOB_TIMEOUT_S", "600"))
                         _ai_job_deadline = _time.monotonic() + _ai_job_timeout
 
                         # ── Counters for end-of-loop summary ──────────────────────────
@@ -899,7 +900,8 @@ def _stage_generate_video(
                             f"(total {_ai_total_s:.1f}s)"
                         )
                         logger.info("[queue_video %s] %s", job_id, _summary)
-                        log_job(job_id, _summary, stage="visual_provider")
+                        from backend.services.queue_services import log_job as _log_job_ai
+                        _log_job_ai(job_id, _summary, stage="visual_provider")
                     
                     else:
                         # Phase 3E.4: Standard propagation (same background for all scenes)
