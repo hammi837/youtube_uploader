@@ -403,6 +403,94 @@ def run_cleanup(dry_run: bool = False) -> dict:
         except Exception as exc:
             errors.append(f"TTS audio cleanup error: {str(exc)[:120]}")
 
+        # ── Clean old AI-generated images ──────────────────────────────────
+        # Mirrors the video/thumbnail/caption cleanup:
+        # - Remove per-job image directories for completed jobs older than
+        #   MEDIA_RETENTION_DAYS.
+        # - Never remove directories for active/queued jobs.
+        # - Also removes known development/test-only directories ("test",
+        #   "unknown") that were created during development and contain no
+        #   legitimate production data.
+        try:
+            from backend.services.visual.ai_image_backend import get_ai_image_output_dir
+
+            ai_root = get_ai_image_output_dir()
+            if ai_root.exists():
+                # Build set of job IDs that must NOT be cleaned
+                protected_job_ids: set[str] = set()
+                for job in active_jobs:
+                    protected_job_ids.add(job.id)
+
+                # Known development/test-only directories — safe to always remove
+                _DEV_DIRS = {"test", "unknown"}
+
+                for job_dir in ai_root.iterdir():
+                    if not job_dir.is_dir():
+                        continue
+
+                    dir_name = job_dir.name
+
+                    # Always remove known dev/test artifacts
+                    if dir_name in _DEV_DIRS:
+                        try:
+                            size = sum(
+                                f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
+                            )
+                            if not dry_run:
+                                shutil.rmtree(job_dir, ignore_errors=True)
+                            files_deleted += 1
+                            bytes_freed += size
+                            logger.info(
+                                "%sCleaned dev/test AI image dir: %s",
+                                "[DRY] " if dry_run else "", dir_name,
+                            )
+                        except Exception as exc:
+                            errors.append(
+                                f"Could not clean AI image dir {dir_name}: {str(exc)[:80]}"
+                            )
+                        continue
+
+                    # Skip active/queued job directories
+                    if dir_name in protected_job_ids:
+                        files_skipped += 1
+                        continue
+
+                    # Check if this job is completed and older than retention cutoff
+                    matching_job = (
+                        db.query(ContentQueueJob)
+                        .filter(
+                            ContentQueueJob.id == dir_name,
+                            ContentQueueJob.status == QueueStatus.COMPLETED,
+                            ContentQueueJob.completed_at < cutoff,
+                        )
+                        .first()
+                    )
+                    if matching_job is None:
+                        # Job is recent, active, or not found in DB — preserve
+                        files_skipped += 1
+                        continue
+
+                    # Safe to remove
+                    try:
+                        size = sum(
+                            f.stat().st_size for f in job_dir.rglob("*") if f.is_file()
+                        )
+                        if not dry_run:
+                            shutil.rmtree(job_dir, ignore_errors=True)
+                        files_deleted += 1
+                        bytes_freed += size
+                        logger.info(
+                            "%sCleaned AI image dir: %s (%d bytes)",
+                            "[DRY] " if dry_run else "", dir_name, size,
+                        )
+                    except Exception as exc:
+                        errors.append(
+                            f"Could not clean AI image dir {dir_name}: {str(exc)[:80]}"
+                        )
+
+        except Exception as exc:
+            errors.append(f"AI image cleanup error: {str(exc)[:120]}")
+
     finally:
         db.close()
 
