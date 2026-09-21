@@ -26,6 +26,7 @@ class BackgroundType(str, Enum):
     LOCAL_VIDEO = "local_video"  # Local video clip
     LOCAL_VIDEO_AUTO = "local_video_auto"  # Automatic local video selection (Phase 3E.5)
     PLACEHOLDER = "placeholder"  # Generated placeholder background
+    VISUAL_PROVIDER = "visual_provider"  # Visual provider abstraction (Phase 3F.4)
 
 
 class BackgroundFit(str, Enum):
