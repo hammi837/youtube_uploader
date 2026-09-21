@@ -745,6 +745,7 @@ def _stage_generate_video(
         # Phase 3E.4: Propagate background settings to scenes if configured at job level
         # Phase 3E.5: Handle auto-selection for local_video_auto
         # Phase 3F.1: Handle auto-selection for local_image_auto
+        # Phase 3F.4: Handle visual provider abstraction
         if background_type:
             from backend.content_models import ContentProject
             from backend.services.video.video_asset_discovery import select_auto_backgrounds
@@ -818,6 +819,60 @@ def _stage_generate_video(
                                     scene["background_fit"] = background_fit
 
                         logger.info("[queue_video %s] Applied auto-selected image backgrounds to %d scenes", job_id, len(scenes))
+                    
+                    # Phase 3F.4: Visual provider abstraction
+                    elif background_type == BackgroundType.VISUAL_PROVIDER.value:
+                        from backend.services.visual.visual_provider import generate_visual_asset
+                        
+                        logger.info("[queue_video %s] Using visual provider for background generation", job_id)
+                        
+                        # Apply visual provider to each scene
+                        for i, scene in enumerate(scenes):
+                            # Only override scenes without explicit background or with visual_provider
+                            if not scene.get("background_type") or scene.get("background_type") == BackgroundType.VISUAL_PROVIDER.value:
+                                try:
+                                    # Get visual prompt from scene
+                                    visual_prompt = scene.get("visual_prompt")
+                                    
+                                    # Generate visual asset using provider
+                                    result = generate_visual_asset(
+                                        visual_prompt=visual_prompt,
+                                        aspect_ratio=aspect_ratio,
+                                        scene_context={
+                                            "job_id": job_id,
+                                            "scene_number": i,
+                                        },
+                                    )
+                                    
+                                    if result.asset_path and not result.fallback_used:
+                                        # Valid asset from provider
+                                        scene["background_type"] = BackgroundType.LOCAL_IMAGE.value
+                                        scene["background_path"] = result.asset_path
+                                        scene["background_color"] = background_color
+                                        scene["background_fit"] = background_fit
+                                        logger.debug("[queue_video %s] Scene %d: visual provider selected %s (provider: %s)", 
+                                            job_id, i + 1, result.asset_path, result.provider_name)
+                                    else:
+                                        # Fallback to gradient
+                                        scene["background_type"] = BackgroundType.GRADIENT.value
+                                        scene["background_path"] = None
+                                        scene["background_color"] = background_color
+                                        scene["background_fit"] = background_fit
+                                        if result.error_message:
+                                            logger.warning("[queue_video %s] Scene %d: visual provider fallback (%s)", 
+                                                job_id, i + 1, result.error_message)
+                                        else:
+                                            logger.debug("[queue_video %s] Scene %d: visual provider fallback (no asset)", job_id, i + 1)
+                                except Exception as e:
+                                    # Provider exception - log and fallback to gradient
+                                    logger.error("[queue_video %s] Scene %d: visual provider error: %s, using gradient fallback", 
+                                        job_id, i + 1, e)
+                                    scene["background_type"] = BackgroundType.GRADIENT.value
+                                    scene["background_path"] = None
+                                    scene["background_color"] = background_color
+                                    scene["background_fit"] = background_fit
+
+                        logger.info("[queue_video %s] Applied visual provider backgrounds to %d scenes", job_id, len(scenes))
                     
                     else:
                         # Phase 3E.4: Standard propagation (same background for all scenes)
