@@ -825,7 +825,19 @@ def _stage_generate_video(
                         from backend.services.visual.visual_provider import generate_visual_asset
                         
                         logger.info("[queue_video %s] Using visual provider for background generation", job_id)
-                        
+
+                        # ── Per-job AI generation budget ───────────────────────────────
+                        # Compute a monotonic deadline so slow/repeated timeouts can't
+                        # block the queue worker indefinitely.
+                        import time as _time
+                        _ai_job_timeout = float(os.getenv("AI_IMAGE_JOB_TIMEOUT_S", "600"))
+                        _ai_job_deadline = _time.monotonic() + _ai_job_timeout
+
+                        # ── Counters for end-of-loop summary ──────────────────────────
+                        _ai_generated = 0
+                        _ai_fallback  = 0
+                        _ai_total_s   = 0.0
+
                         # Apply visual provider to each scene
                         for i, scene in enumerate(scenes):
                             # Only override scenes without explicit background or with visual_provider
@@ -833,7 +845,8 @@ def _stage_generate_video(
                                 try:
                                     # Get visual prompt from scene
                                     visual_prompt = scene.get("visual_prompt")
-                                    
+
+                                    _t_scene = _time.monotonic()
                                     # Generate visual asset using provider
                                     result = generate_visual_asset(
                                         visual_prompt=visual_prompt,
@@ -841,8 +854,10 @@ def _stage_generate_video(
                                         scene_context={
                                             "job_id": job_id,
                                             "scene_number": i,
+                                            "job_ai_deadline": _ai_job_deadline,
                                         },
                                     )
+                                    _ai_total_s += _time.monotonic() - _t_scene
                                     
                                     if result.asset_path and not result.fallback_used:
                                         # Valid asset from provider
@@ -850,6 +865,7 @@ def _stage_generate_video(
                                         scene["background_path"] = result.asset_path
                                         scene["background_color"] = background_color
                                         scene["background_fit"] = background_fit
+                                        _ai_generated += 1
                                         logger.debug("[queue_video %s] Scene %d: visual provider selected %s (provider: %s)", 
                                             job_id, i + 1, result.asset_path, result.provider_name)
                                     else:
@@ -858,6 +874,7 @@ def _stage_generate_video(
                                         scene["background_path"] = None
                                         scene["background_color"] = background_color
                                         scene["background_fit"] = background_fit
+                                        _ai_fallback += 1
                                         if result.error_message:
                                             logger.warning("[queue_video %s] Scene %d: visual provider fallback (%s)", 
                                                 job_id, i + 1, result.error_message)
@@ -871,8 +888,18 @@ def _stage_generate_video(
                                     scene["background_path"] = None
                                     scene["background_color"] = background_color
                                     scene["background_fit"] = background_fit
+                                    _ai_fallback += 1
 
-                        logger.info("[queue_video %s] Applied visual provider backgrounds to %d scenes", job_id, len(scenes))
+                        # ── AI generation summary ─────────────────────────────────────
+                        _ai_total_scenes = _ai_generated + _ai_fallback
+                        _summary = (
+                            f"AI visual generation: "
+                            f"{_ai_generated}/{_ai_total_scenes} scenes generated with AI, "
+                            f"{_ai_fallback}/{_ai_total_scenes} used gradient fallback "
+                            f"(total {_ai_total_s:.1f}s)"
+                        )
+                        logger.info("[queue_video %s] %s", job_id, _summary)
+                        log_job(job_id, _summary, stage="visual_provider")
                     
                     else:
                         # Phase 3E.4: Standard propagation (same background for all scenes)
