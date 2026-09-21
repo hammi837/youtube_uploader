@@ -109,18 +109,47 @@ class TestAIVisualProvider:
         assert provider.provider_name == "ai"
 
     def test_generate_visual_not_implemented(self):
-        """Test generate_visual returns not implemented error."""
-        provider = AIVisualProvider()
-        result = provider.generate_visual(
-            visual_prompt="Test prompt",
-            aspect_ratio="16:9",
-            scene_context={"scene_number": 1},
+        """Test generate_visual returns a VisualAssetResult (Phase 3F.5: real implementation).
+
+        Previously this test checked for a 'not implemented' stub result.
+        Phase 3F.5 replaced the stub with a real AI backend; the provider now
+        either returns a generated image or gracefully falls back to gradient.
+        Either way it must return a valid VisualAssetResult with provider_name='ai'.
+        """
+        from unittest.mock import MagicMock, patch
+
+        # Use a mock backend so the test is a unit test (no real HTTP call)
+        mock_backend = MagicMock()
+        mock_backend.backend_name = "pollinations"
+        # Simulate failure → graceful fallback
+        mock_backend.generate_image.return_value = MagicMock(
+            success=False,
+            output_path=None,
+            error_message="unit-test-no-call",
+            backend_name="pollinations",
+            model="flux",
+            generation_time_s=0.0,
         )
-        assert result.asset_path is None
+
+        with patch("backend.services.visual.visual_provider.AIImageBackendFactory") as mock_factory:
+            mock_factory.create.return_value = mock_backend
+            provider = AIVisualProvider()
+
+        import os, tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"AI_IMAGE_OUTPUT_DIR": tmp, "AI_IMAGE_CACHE_ENABLED": "false"}):
+                result = provider.generate_visual(
+                    visual_prompt="Test prompt",
+                    aspect_ratio="16:9",
+                    scene_context={"scene_number": 1},
+                )
+
         assert result.asset_type == "image"
         assert result.provider_name == "ai"
+        # On backend failure: graceful fallback to gradient
         assert result.fallback_used is True
-        assert result.error_message == "AI visual provider not implemented yet"
+        assert result.asset_path is None
+        assert result.error_message is not None
 
 
 class TestLocalVisualProvider:
