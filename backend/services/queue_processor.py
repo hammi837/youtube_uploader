@@ -427,14 +427,16 @@ def _stage_research_and_script(job_id: str) -> str:
             stage_name="research+script",
         )
 
-        # Phase 3F.2: Generate visual prompts for scenes
+        # Phase 3F.2/3F.6: Generate visual prompts for scenes with rich context
         _update_job(job_id, stage="Generating visual prompts…", progress=12)
-        from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes
+        from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes, tone_to_visual_style
+        _visual_style = tone_to_visual_style(job.tone)
         script.scenes = add_visual_prompts_to_scenes(
             script.scenes,
             aspect_ratio=job.aspect_ratio,
-            visual_style="cinematic",
+            visual_style=_visual_style,
             use_batch=True,
+            topic=job.topic,
         )
 
         _update_job(job_id, stage="Saving script…", progress=15)
@@ -834,6 +836,18 @@ def _stage_generate_video(
                         _ai_job_timeout = float(_os_ai.getenv("AI_IMAGE_JOB_TIMEOUT_S", "600"))
                         _ai_job_deadline = _time.monotonic() + _ai_job_timeout
 
+                        # Phase 3F.6: pull topic and style for scene context enrichment
+                        from backend.services.visual_prompt_generator import tone_to_visual_style as _t2s
+                        from backend.db import SessionLocal as _SL_ai
+                        from backend.queue_models import ContentQueueJob as _CQJ_ai
+                        _db_ai = _SL_ai()
+                        try:
+                            _qj_ai = _db_ai.query(_CQJ_ai).filter(_CQJ_ai.id == job_id).first()
+                            job_topic = _qj_ai.topic if _qj_ai else ""
+                            _ai_visual_style = _t2s(_qj_ai.tone) if _qj_ai else "cinematic"
+                        finally:
+                            _db_ai.close()
+
                         # ── Counters for end-of-loop summary ──────────────────────────
                         _ai_generated = 0
                         _ai_fallback  = 0
@@ -856,6 +870,10 @@ def _stage_generate_video(
                                             "job_id": job_id,
                                             "scene_number": i,
                                             "job_ai_deadline": _ai_job_deadline,
+                                            # Phase 3F.6: richer context for prompt augmentation
+                                            "topic": job_topic,
+                                            "visual_style": _ai_visual_style,
+                                            "total_scenes": len(scenes),
                                         },
                                     )
                                     _ai_total_s += _time.monotonic() - _t_scene
