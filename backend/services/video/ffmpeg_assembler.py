@@ -118,32 +118,57 @@ class SceneClip:
     zoom_end: float = 1.05
 
 
+import math
+
 def calculate_scene_durations(
     scenes: list[dict],
     total_audio_duration: float,
 ) -> list[float]:
     """
     Distribute total audio duration across scenes proportional to
-    each scene's narration character count.
-
-    Falls back to equal distribution if character counts are all zero.
+    each scene's narration character count, respecting explicit durations.
     """
-    char_counts = []
-    for scene in scenes:
+    if not math.isfinite(total_audio_duration) or total_audio_duration <= 0:
+        total_audio_duration = max(len(scenes) * 3.0, 5.0)
+
+    durations = [0.0] * len(scenes)
+    unallocated_idx = []
+    unallocated_chars = 0
+    allocated_dur = 0.0
+
+    for i, scene in enumerate(scenes):
+        explicit_dur = scene.get("duration_seconds") or scene.get("estimated_duration_seconds")
+        if explicit_dur is not None:
+            try:
+                explicit_dur = float(explicit_dur)
+            except (ValueError, TypeError):
+                explicit_dur = None
+                
+        if explicit_dur is not None and math.isfinite(explicit_dur) and explicit_dur >= 1.0:
+            durations[i] = explicit_dur
+            allocated_dur += explicit_dur
+        else:
+            unallocated_idx.append(i)
+            narration = scene.get("narration", "") or ""
+            unallocated_chars += max(len(narration), 1)
+
+    # Distribute remaining duration to unallocated
+    remaining_dur = max(0.0, total_audio_duration - allocated_dur)
+    
+    for i in unallocated_idx:
+        scene = scenes[i]
         narration = scene.get("narration", "") or ""
-        char_counts.append(max(len(narration), 1))
+        chars = max(len(narration), 1)
+        if unallocated_chars > 0:
+            dur = (chars / unallocated_chars) * remaining_dur
+        else:
+            dur = remaining_dur / max(len(unallocated_idx), 1)
+        durations[i] = dur
 
-    total_chars = sum(char_counts)
-    durations = [
-        max(1.0, (c / total_chars) * total_audio_duration)
-        for c in char_counts
-    ]
-
-    # Normalise so sum == total_audio_duration
-    current_sum = sum(durations)
-    if current_sum > 0:
-        factor = total_audio_duration / current_sum
-        durations = [d * factor for d in durations]
+    # Safety checks
+    for i in range(len(durations)):
+        if not math.isfinite(durations[i]) or durations[i] < 1.0:
+            durations[i] = 1.0
 
     return durations
 
