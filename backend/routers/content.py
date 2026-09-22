@@ -166,13 +166,15 @@ def generate_script_endpoint(
 
         research, script = generate_script(body)
 
-        # Phase 3F.2: Generate visual prompts for scenes
-        from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes
+        # Phase 3F.2/3F.6: Generate visual prompts with rich scene context
+        from backend.services.visual_prompt_generator import add_visual_prompts_to_scenes, tone_to_visual_style
+        _visual_style = tone_to_visual_style(body.tone)
         script.scenes = add_visual_prompts_to_scenes(
             script.scenes,
-            aspect_ratio="16:9",  # Content API defaults to 16:9
-            visual_style="cinematic",
+            aspect_ratio=body.aspect_ratio,
+            visual_style=_visual_style,
             use_batch=True,
+            topic=body.topic,
         )
 
         # Update status to generating (script is validated, now persisting)
