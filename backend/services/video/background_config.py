@@ -101,7 +101,7 @@ def get_background_config(
 
     # Validate fit mode
     try:
-        bg_fit = BackgroundFit(background_fit.lower())
+        bg_fit = BackgroundFit((background_fit or "cover").lower())
     except ValueError:
         bg_fit = DEFAULT_FIT_MODE
 

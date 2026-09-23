@@ -13,6 +13,7 @@ import type {
   QueueJob,
   QueueStats,
   QueueStatusSummary,
+  RenderManifest,
   ResearchRequest,
   ResearchResponse,
   ScriptRequest,
@@ -355,6 +356,16 @@ export async function getQueueStats(): Promise<QueueStats> {
 export async function getJobLogs(jobId: string, limit = 100): Promise<JobLogEntry[]> {
   const res = await fetch(`${BASE_URL}/api/queue/${jobId}/logs?limit=${limit}`);
   return handleResponse<JobLogEntry[]>(res);
+}
+
+// ── Phase 3H: Job Manifest ───────────────────────────────────────────────────
+
+/** Fetch the persistent production manifest for a completed job.
+ *  Throws an Error with a user-readable message when the manifest is unavailable (404).
+ */
+export async function getJobManifest(jobId: string): Promise<RenderManifest> {
+  const res = await fetch(`${BASE_URL}/api/queue/${jobId}/manifest`);
+  return handleResponse<RenderManifest>(res);
 }
 
 // ── Phase 3D: YouTube Playlists ───────────────────────────────────────────────

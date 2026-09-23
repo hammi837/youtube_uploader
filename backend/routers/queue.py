@@ -497,6 +497,65 @@ def run_cleanup_endpoint(
     )
 
 
+# ── GET /api/queue/{job_id}/manifest ─────────────────────────────────────────
+
+# Compiled UUID pattern — used to prevent path-traversal before touching the FS.
+import re as _re
+_UUID_RE = _re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    _re.IGNORECASE,
+)
+
+
+@router.get("/{job_id}/manifest")
+def get_job_manifest(
+    job_id: str,
+    db: Session = Depends(get_db),
+) -> dict:
+    """
+    Return the persisted production manifest for a completed job.
+
+    Validates job_id as a UUID before touching the filesystem (path-traversal guard).
+    Returns 200 + JSON payload when the manifest file exists and is valid.
+    Returns 404 when no manifest has been produced yet.
+    Returns 422 for a non-UUID job_id.
+    """
+    # Security: reject anything that is not a canonical UUID.
+    if not _UUID_RE.match(job_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="job_id must be a valid UUID (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).",
+        )
+
+    # Verify the job exists in the DB so we return 404 for unknown jobs too.
+    job = _get_job_or_404(job_id, db)
+
+    # Phase 3H: manifests are stored by the VIDEO pipeline job ID, not the queue job ID.
+    # The video_job_id is populated once the video generation stage begins.
+    from backend.services.video.media_utils import output_manifest_path
+    video_job_id = getattr(job, "video_job_id", None)
+    mf_path = output_manifest_path(video_job_id) if video_job_id else output_manifest_path(job_id)
+
+    if not mf_path.exists() or mf_path.stat().st_size == 0:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No manifest available for job {job_id}. "
+                   "The job may still be running, may have failed before the manifest "
+                   "was written, or the manifest file was removed.",
+        )
+
+    try:
+        payload = json.loads(mf_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.error("Manifest file for job %s is unreadable: %s", job_id, exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Manifest file exists but could not be parsed. See server logs.",
+        ) from exc
+
+    return payload
+
+
 # ── GET /api/queue/{job_id}/logs ──────────────────────────────────────────────
 
 @router.get("/{job_id}/logs")

@@ -73,6 +73,18 @@ def output_caption_path(job_id: str) -> Path:
     return get_captions_dir() / f"{job_id}.srt"
 
 
+def get_manifests_dir() -> Path:
+    """Return the persistent manifests directory (Phase 3H)."""
+    d = get_data_dir() / "manifests"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def output_manifest_path(job_id: str) -> Path:
+    """Return the persistent manifest JSON path for a job (Phase 3H)."""
+    return get_manifests_dir() / f"{job_id}.json"
+
+
 def cleanup_temp(job_id: str, keep_on_failure: bool = False) -> None:
     """
     Remove the per-job temp directory.

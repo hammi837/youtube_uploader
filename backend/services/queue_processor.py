@@ -328,19 +328,19 @@ def _run_full_pipeline(job_id: str) -> None:
         raise RuntimeError(msg)
 
     # ── Stage 1: Research + Script (5–15%) ────────────────────────────────
-    _update_job(job_id, status=QueueStatus.RESEARCHING, stage="Researching topic…", progress=2)
+    _update_job(job_id, status=QueueStatus.RESEARCHING, stage="Researching topic…", progress=2, production_stage="researching")
     log_job(job_id, "Research started.", stage="research")
     content_project_id = _stage_research_and_script(job_id)
     log_job(job_id, f"Script generated: project_id={content_project_id}", stage="research")
 
     # ── Stage 2: TTS narration (15–30%) ───────────────────────────────────
-    _update_job(job_id, status=QueueStatus.GENERATING_AUDIO, stage="Generating narration…", progress=15)
+    _update_job(job_id, status=QueueStatus.GENERATING_AUDIO, stage="Generating narration…", progress=15, production_stage="generating_audio")
     log_job(job_id, "TTS narration started.", stage="tts")
     audio_id = _stage_generate_audio(job_id, content_project_id)
     log_job(job_id, f"TTS completed: audio_id={audio_id}", stage="tts")
 
     # ── Stage 3: Video generation (30–87%) ────────────────────────────────
-    _update_job(job_id, status=QueueStatus.GENERATING_VIDEO, stage="Generating video…", progress=30)
+    _update_job(job_id, status=QueueStatus.GENERATING_VIDEO, stage="Generating video…", progress=30, production_stage="preparing_visuals")
     log_job(job_id, "Video generation started.", stage="video")
     logger.info("[queue_pipeline %s] Starting video generation stage", job_id)
     video_job_id = _stage_generate_video(job_id, content_project_id, audio_id)
@@ -358,7 +358,7 @@ def _run_full_pipeline(job_id: str) -> None:
         raise RuntimeError(msg)
 
     # ── Stage 4: YouTube upload + thumbnail + schedule (87–100%) ──────────
-    _update_job(job_id, status=QueueStatus.UPLOADING, stage="Uploading to YouTube…", progress=87)
+    _update_job(job_id, status=QueueStatus.UPLOADING, stage="Uploading to YouTube…", progress=87, production_stage="uploading")
     log_job(job_id, "YouTube upload started.", stage="youtube")
     try:
         _stage_youtube(job_id, video_job_id)
@@ -374,6 +374,7 @@ def _run_full_pipeline(job_id: str) -> None:
         status=QueueStatus.COMPLETED,
         stage="Complete",
         progress=100,
+        production_stage="completed",
         completed_at=datetime.now(timezone.utc),
     )
     log_job(job_id, "Job completed successfully.", stage="complete")
@@ -637,7 +638,28 @@ def _stage_generate_video(
         # Map video pipeline 0-100 into overall progress 30-87
         mapped = 30 + int(pct * 0.57)
         logger.debug("[queue_video_progress %s] Pipeline progress: %d%%, step: %s, mapped: %d%%", job_id, pct, step, mapped)
-        _update_job(job_id, stage=f"Video: {step}", progress=mapped)
+
+        # Derive production_stage from step text
+        _ps = None
+        _sl = step.lower()
+        if "visual" in _sl or "scene card" in _sl or "scene visual" in _sl:
+            _ps = "preparing_visuals"
+        elif "clip" in _sl and "built" in _sl:
+            _ps = "building_clips"
+        elif "concat" in _sl or "audio mix" in _sl or "mixing" in _sl:
+            _ps = "assembling"
+        elif "caption" in _sl:
+            _ps = "generating_captions"
+        elif "encod" in _sl or "burn" in _sl or "rendering" in _sl:
+            _ps = "rendering"
+        elif "thumbnail" in _sl:
+            _ps = "generating_thumbnail"
+        elif "verify" in _sl or "verifying" in _sl:
+            _ps = "verifying"
+        elif "complete" in _sl or pct >= 100:
+            _ps = "completed"
+
+        _update_job(job_id, stage=f"Video: {step}", progress=mapped, production_stage=_ps)
 
         # Also update the video job status/progress in the database
         if video_job_id_ref:
@@ -977,6 +999,42 @@ def _stage_generate_video(
                 logger.info("[queue_video %s] Video job marked completed: %s, output=%s", job_id, vj_id, result.get("output_path"))
         finally:
             db2.close()
+
+        # ── Phase 3G: Build and persist production summary ────────────────────
+        duration_s  = result.get("duration_seconds", 0.0) or 0.0
+        size_mb     = (result.get("file_size_bytes", 0) or 0) / 1024 / 1024
+        elapsed_s   = result.get("elapsed_seconds", 0.0) or 0.0
+        music_used  = result.get("music_used", False)
+        caps        = result.get("captions_generated", False)
+        output_name = Path(result.get("output_path", "")).name if result.get("output_path") else "unknown"
+
+        summary_text = (
+            f"Video produced: {output_name} | "
+            f"duration={duration_s:.1f}s | "
+            f"size={size_mb:.1f} MB | "
+            f"elapsed={elapsed_s:.0f}s | "
+            f"music={'yes' if music_used else 'no'} | "
+            f"captions={'yes' if caps else 'no'}"
+        )
+
+        # Phase 3H: record manifest persistence failure in summary (non-fatal)
+        _mf_err = result.get("manifest_write_error")
+        if _mf_err:
+            summary_text += f" | manifest_error={_mf_err[:120]}"
+            logger.warning(
+                "[queue_video %s] Video produced successfully, but manifest persistence failed: %s",
+                job_id, _mf_err,
+            )
+
+        logger.info("[queue_video %s] Production summary: %s", job_id, summary_text)
+
+        from backend.services.queue_services import log_job as _log_summary
+        _log_summary(job_id, summary_text, stage="video")
+        _update_job(
+            job_id,
+            production_stage="completed",
+            summary=summary_text,
+        )
 
         return result
 
@@ -1321,8 +1379,10 @@ def _update_job(
     *,
     status: Optional[str] = None,
     stage: Optional[str] = None,
+    production_stage: Optional[str] = None,
     progress: Optional[int] = None,
     completed_at: Optional[datetime] = None,
+    summary: Optional[str] = None,
 ) -> None:
     from backend.db import SessionLocal
     from backend.queue_models import ContentQueueJob
@@ -1332,10 +1392,12 @@ def _update_job(
         job = db.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
         if not job:
             return
-        if status   is not None: job.status        = status
-        if stage    is not None: job.current_stage = stage
-        if progress is not None: job.progress      = progress
-        if completed_at is not None: job.completed_at = completed_at
+        if status          is not None: job.status           = status
+        if stage           is not None: job.current_stage    = stage
+        if production_stage is not None: job.production_stage = production_stage
+        if progress        is not None: job.progress         = progress
+        if completed_at    is not None: job.completed_at     = completed_at
+        if summary         is not None: job.summary          = summary
         db.commit()
     except Exception as exc:
         logger.warning("_update_job failed for %s: %s", job_id, exc)

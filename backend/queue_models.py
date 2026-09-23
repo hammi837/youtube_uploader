@@ -96,8 +96,10 @@ class ContentQueueJob(Base):
 
     # ── Status ────────────────────────────────────────────────────────────
     status: Mapped[str]                  = mapped_column(String(30), nullable=False, default=QueueStatus.QUEUED)
-    current_stage: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    current_stage: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)   # Phase 3G: widened from 100
+    production_stage: Mapped[Optional[str]] = mapped_column(String(30), nullable=True)  # Phase 3G: structured stage
     progress: Mapped[int]                = mapped_column(Integer, nullable=False, default=0)
+
 
     # ── Retry ─────────────────────────────────────────────────────────────
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -162,6 +164,9 @@ class ContentQueueJob(Base):
     background_path: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
     background_color: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     background_fit: Mapped[Optional[str]] = mapped_column(String(20), nullable=True)
+
+    # ── Phase 3G: Production summary ───────────────────────────────────────────
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # concise production report
 
     # ── Error tracking ─────────────────────────────────────────────────────
     error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
@@ -366,6 +371,13 @@ class QueueJobResponse(BaseModel):
     background_color: Optional[str] = None
     background_fit: Optional[str] = "cover"
 
+    # ── Phase 3G: Production stage + summary ───────────────────────────────────
+    production_stage: Optional[str] = None   # structured stage label
+    summary: Optional[str] = None            # concise production report
+
+    # ── Phase 3H: Manifest observability ───────────────────────────────────────
+    manifest_available: bool = False         # True when data/manifests/{id}.json exists
+
     model_config = {"from_attributes": True}
 
 
@@ -466,7 +478,29 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         background_path=getattr(job, "background_path", None),
         background_color=getattr(job, "background_color", None),
         background_fit=getattr(job, "background_fit", "cover"),
+        # Phase 3G fields
+        production_stage=getattr(job, "production_stage", None),
+        summary=getattr(job, "summary", None),
+        # Phase 3H: manifest_available — True when persistent manifest file exists
+        # The manifest is stored by the VIDEO pipeline job ID, not the queue job ID
+        manifest_available=_manifest_exists(job.id, getattr(job, "video_job_id", None)),
     )
+
+
+def _manifest_exists(job_id: str, video_job_id: str | None = None) -> bool:
+    """Return True if a persistent manifest JSON exists for this job.
+
+    Phase 3H: The manifest is stored by the VIDEO pipeline job ID (video_job_id),
+    not the queue job ID. Fall back to checking the queue job ID for safety.
+    """
+    try:
+        from backend.services.video.media_utils import output_manifest_path
+        # Prefer video_job_id (that's where the pipeline saves it)
+        if video_job_id:
+            return output_manifest_path(video_job_id).exists()
+        return output_manifest_path(job_id).exists()
+    except Exception:
+        return False
 
 
 # ── Phase 3B: Job log model ───────────────────────────────────────────────────

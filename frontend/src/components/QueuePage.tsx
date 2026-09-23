@@ -6,6 +6,7 @@ import {
   createQueueJobs,
   deleteQueueJob,
   getJobLogs,
+  getJobManifest,
   getQueueHealth,
   getQueueStats,
   getQueueStatus,
@@ -29,6 +30,7 @@ import type {
   QueueHealth,
   QueueJob,
   QueueStats,
+  RenderManifest,
   VideoTemplate,
   YouTubePlaylist,
 } from '../types/api';
@@ -470,6 +472,7 @@ function QueueDashboard({ onOpenLogs }: { onOpenLogs: (id: string) => void }) {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState('');
   const [cleanup, setCleanup]     = useState<CleanupResult | null>(null);
+  const [manifestJobId, setManifestJobId] = useState<string | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -635,9 +638,17 @@ function QueueDashboard({ onOpenLogs }: { onOpenLogs: (id: string) => void }) {
               isCurrent={currentJobId === job.id}
               onRefresh={load}
               onOpenLogs={onOpenLogs}
+              onOpenManifest={setManifestJobId}
             />
           ))}
         </div>
+      )}
+
+      {manifestJobId && (
+        <ManifestModal
+          jobId={manifestJobId}
+          onClose={() => setManifestJobId(null)}
+        />
       )}
     </div>
   );
@@ -646,12 +657,13 @@ function QueueDashboard({ onOpenLogs }: { onOpenLogs: (id: string) => void }) {
 // ── QueueJobCard ──────────────────────────────────────────────────────────────
 
 function QueueJobCard({
-  job, isCurrent, onRefresh, onOpenLogs,
+  job, isCurrent, onRefresh, onOpenLogs, onOpenManifest,
 }: {
   job: QueueJob;
   isCurrent: boolean;
   onRefresh: () => void;
   onOpenLogs: (id: string) => void;
+  onOpenManifest: (id: string) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [elapsed, setElapsed] = useState(0);
@@ -711,6 +723,7 @@ function QueueJobCard({
         </div>
         <span className="queue-job-card__status" style={{color}}>
           {STATUS_LABEL[job.status] ?? job.status}
+          {job.production_stage && ` (${job.production_stage})`}
         </span>
       </div>
 
@@ -793,6 +806,13 @@ function QueueJobCard({
         <div className="queue-job-error">{job.error_message.substring(0,220)}</div>
       )}
 
+      {/* Phase 3G: Summary */}
+      {job.summary && (
+        <div className="alert alert--info" style={{marginTop:'0.5rem', padding:'0.5rem', fontSize:'0.8rem'}}>
+          {job.summary}
+        </div>
+      )}
+
       {/* Timestamps */}
       <div className="hint-text" style={{fontSize:'0.73rem', marginTop:'0.2rem'}}>
         Created {fmt(job.created_at)}
@@ -802,6 +822,10 @@ function QueueJobCard({
 
       {/* Actions */}
       <div className="queue-job-card__actions">
+        {job.manifest_available && (
+          <button className="btn btn--ghost btn--sm" disabled={busy}
+            onClick={() => onOpenManifest(job.id)}>📄 Manifest</button>
+        )}
         <button className="btn btn--ghost btn--sm" disabled={busy}
           onClick={() => onOpenLogs(job.id)}>📋 Logs</button>
         {job.status === 'failed' && (
@@ -885,6 +909,54 @@ function JobLogsPanel({ jobId, onBack }: { jobId: string; onBack: () => void }) 
           </div>
         ))}
         <div ref={bottomRef} />
+      </div>
+    </div>
+  );
+}
+
+// ── Phase 3H: ManifestModal ──────────────────────────────────────────────────
+
+function ManifestModal({ jobId, onClose }: { jobId: string; onClose: () => void }) {
+  const [manifest, setManifest] = useState<RenderManifest | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    getJobManifest(jobId)
+      .then(setManifest)
+      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load manifest'))
+      .finally(() => setLoading(false));
+  }, [jobId]);
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{
+      position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+      backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex',
+      alignItems: 'center', justifyContent: 'center', zIndex: 1000
+    }}>
+      <div className="modal-content" onClick={e => e.stopPropagation()} style={{
+        backgroundColor: 'var(--bg-card)', padding: '1.5rem',
+        borderRadius: '8px', maxWidth: '800px', width: '90%', maxHeight: '90vh',
+        display: 'flex', flexDirection: 'column'
+      }}>
+        <div style={{display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem'}}>
+          <h2 style={{margin: 0}}>📄 Production Manifest</h2>
+          <button className="btn btn--ghost btn--sm" onClick={onClose}>✕</button>
+        </div>
+
+        {loading && <p className="hint-text">Loading manifest...</p>}
+        {error && <div className="alert alert--error">{error}</div>}
+
+        {!loading && manifest && (
+          <div style={{flex: 1, overflowY: 'auto', backgroundColor: 'var(--bg-body)', padding: '1rem', borderRadius: '4px'}}>
+            <pre style={{
+              margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+              fontSize: '0.85rem', color: 'var(--color-text)'
+            }}>
+              {JSON.stringify(manifest, null, 2)}
+            </pre>
+          </div>
+        )}
       </div>
     </div>
   );

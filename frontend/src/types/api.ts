@@ -295,6 +295,46 @@ export interface QueueJob {
   background_path: string | null;
   background_color: string | null;
   background_fit: string | null;
+  // Phase 3G: Production observability
+  production_stage: string | null;
+  summary: string | null;
+  // Phase 3H: Manifest availability flag
+  manifest_available: boolean;
+}
+
+// ── Phase 3H: Render Manifest ────────────────────────────────────────────────
+
+export interface RenderManifestScene {
+  scene_index: number;
+  duration_seconds: number | null;
+  background_type: string | null;
+  background_path: string | null;
+  background_loop: boolean;
+  clip_path: string | null;
+  fallback_used: boolean;
+  fallback_reason: string | null;
+}
+
+export interface RenderManifest {
+  job_id: string;
+  timestamp: string;
+  production_stage: string;
+  aspect_ratio: string;
+  width: number;
+  height: number;
+  scene_count: number;
+  narration_path: string | null;
+  narration_duration_seconds: number | null;
+  scenes: RenderManifestScene[];
+  clip_paths: string[];
+  final_mp4_path: string | null;
+  final_duration_seconds: number | null;
+  final_file_size_bytes: number | null;
+  final_sha256: string | null;
+  elapsed_seconds: number | null;
+  fallback_count: number;
+  fallback_actions: string[];
+  errors: string[];
 }
 
 // ── Phase 3E.2: Aspect Ratio ───────────────────────────────────────────────────

@@ -130,6 +130,11 @@ def _run_pipeline_sync(
     from backend.services.video.video_background_processor import apply_video_background_to_scene  # Phase 3E.4
     from backend.services.video.video_asset_discovery import get_video_by_path  # Phase 3E.4
     from backend.services.media.ffmpeg import check_ffmpeg, FFmpegNotFoundError
+    # Phase 3G: production models
+    from backend.services.video.pipeline_models import (
+        SceneSpec, RenderManifest, SceneManifestEntry,
+        ProductionStage, compute_sha256, utc_now_iso,
+    )
 
     t_start = time.perf_counter()
     temp_dir = get_temp_dir(job_id)
@@ -249,37 +254,99 @@ def _run_pipeline_sync(
 
     step(10, "Narration ready.")
 
+    # ── Phase 3G: Initialise render manifest ──────────────────────────────
+    manifest = RenderManifest(
+        job_id=job_id,
+        timestamp=utc_now_iso(),
+        production_stage=ProductionStage.PREPARING_VISUALS,
+        aspect_ratio=aspect_ratio,
+        width=width,
+        height=height,
+        scene_count=len(scenes),
+        narration_path=str(narration_path),
+        narration_duration_seconds=audio_duration,
+    )
+
+    # ── Phase 3G: Convert scenes to SceneSpec for typed access ────────────
+    scene_specs: list[SceneSpec] = [
+        SceneSpec.from_dict(s, scene_number=s.get("scene_number", i + 1))
+        for i, s in enumerate(scenes)
+    ]
+
+    # ── Phase 3G: Pre-render asset validation ─────────────────────────────
+    # Validate local_video and local_image backgrounds before we start rendering.
+    # We only validate what is configured — other background types are handled
+    # by get_background_config() which already has its own fallback logic.
+    for spec in scene_specs:
+        if spec.background_type == "local_video" and spec.background_path:
+            bg_p = Path(spec.background_path)
+            if not bg_p.exists():
+                raise VideoGenerationError(
+                    f"Scene {spec.scene_number}: local_video background file not found: "
+                    f"{spec.background_path}. Check the path or choose a different background type."
+                )
+            dur = _get_duration(str(bg_p))
+            if dur <= 0:
+                raise VideoGenerationError(
+                    f"Scene {spec.scene_number}: local_video background '{bg_p.name}' "
+                    f"has zero or unreadable duration. The file may be corrupt."
+                )
+            logger.info(
+                "[video_pipeline %s] Scene %d: local_video asset validated — %s (%.1fs)",
+                job_id, spec.scene_number, bg_p.name, dur,
+            )
+        elif spec.background_type == "local_image" and spec.background_path:
+            img_p = Path(spec.background_path)
+            if not img_p.exists():
+                raise VideoGenerationError(
+                    f"Scene {spec.scene_number}: local_image background file not found: "
+                    f"{spec.background_path}. Check the path or choose a different background type."
+                )
+            logger.info(
+                "[video_pipeline %s] Scene %d: local_image asset validated — %s",
+                job_id, spec.scene_number, img_p.name,
+            )
+
     # ── 4. Build scene images ──────────────────────────────────────────────
     step(15, "Building scene visuals...")
     logger.info("[video_pipeline %s] Building scene visuals for %d scenes with template: %s", job_id, len(scenes), template_id)
-    
+
     # Get template configuration
     template = get_template(template_id)
     logger.info("[video_pipeline %s] Using template: %s (%s)", job_id, template.name, template.description)
-    
+
     scene_image_paths: list[Path] = []
 
     # Title card (scene 0)
     title_card_path = temp_dir / "scene_000_title.png"
-    try:
-        logger.info("[video_pipeline %s] Generating title card", job_id)
-        generate_title_card(
-            title=title,
-            hook=hook,
-            output_path=title_card_path,
-            width=width,
-            height=height,
-            topic_seed=title,
-            template=template,  # Phase 3E.1
-            aspect_ratio=aspect_ratio,  # Phase 3E.2
-        )
+    if title_card_path.exists() and title_card_path.stat().st_size > 0:
+        logger.info("[video_pipeline %s] Reusing existing title card: %s", job_id, title_card_path.name)
         scene_image_paths.append(title_card_path)
-        logger.info("[video_pipeline %s] Title card generated: %s", job_id, title_card_path.name)
-    except Exception as exc:
-        logger.warning("[video_pipeline %s] Title card generation failed: %s", job_id, exc)
+    else:
+        try:
+            logger.info("[video_pipeline %s] Generating title card", job_id)
+            generate_title_card(
+                title=title,
+                hook=hook,
+                output_path=title_card_path,
+                width=width,
+                height=height,
+                topic_seed=title,
+                template=template,  # Phase 3E.1
+                aspect_ratio=aspect_ratio,  # Phase 3E.2
+            )
+            scene_image_paths.append(title_card_path)
+            logger.info("[video_pipeline %s] Title card generated: %s", job_id, title_card_path.name)
+        except Exception as exc:
+            logger.warning("[video_pipeline %s] Title card generation failed: %s", job_id, exc)
 
     for i, scene in enumerate(scenes):
         card_path = temp_dir / f"scene_{i + 1:03d}.png"
+        # Phase 3G: artifact-level idempotency — reuse valid existing PNG
+        if card_path.exists() and card_path.stat().st_size > 0:
+            logger.info("[video_pipeline %s] Reusing existing scene card %d: %s", job_id, i + 1, card_path.name)
+            scene_image_paths.append(card_path)
+            continue
         try:
             logger.info("[video_pipeline %s] Generating scene card %d/%d", job_id, i + 1, len(scenes))
             generate_scene_card(
@@ -294,7 +361,7 @@ def _run_pipeline_sync(
                 template=template,  # Phase 3E.1
                 aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
-            
+
             # Phase 3E.3: Apply image/solid color background if configured in scene
             scene_bg_type = scene.get("background_type")
             if scene_bg_type and scene_bg_type != "local_video":
@@ -305,7 +372,7 @@ def _run_pipeline_sync(
                     background_fit=scene.get("background_fit", "cover"),
                 )
                 card_path = apply_background_to_scene(card_path, scene_bg_config, width, height)
-            
+
             scene_image_paths.append(card_path)
             logger.info("[video_pipeline %s] Scene card %d generated: %s", job_id, i + 1, card_path.name)
         except Exception as exc:
@@ -320,7 +387,22 @@ def _run_pipeline_sync(
     all_scene_data = [{"narration": hook or title}]  # title card
     all_scene_data.extend(scenes)
     durations = calculate_scene_durations(all_scene_data, audio_duration)
-    logger.info("[video_pipeline %s] Scene durations calculated: %d scenes, total %.1fs", job_id, len(durations), sum(durations))
+    total_dur = sum(durations)
+    logger.info(
+        "[video_pipeline %s] Scene durations: %d scenes, total %.1fs (audio=%.1fs)",
+        job_id, len(durations), total_dur, audio_duration,
+    )
+
+    # Phase 3G: duration sanity check — warn if total deviates significantly
+    if audio_duration > 0:
+        deviation = abs(total_dur - audio_duration) / audio_duration
+        if deviation > 0.15:
+            logger.warning(
+                "[video_pipeline %s] Duration sanity: total scene duration %.1fs deviates %.0f%% "
+                "from audio duration %.1fs. This may indicate explicit scene durations that differ "
+                "from the audio length — video will not be perfectly synchronized.",
+                job_id, total_dur, deviation * 100, audio_duration,
+            )
 
     # Pad/trim durations list to match image count
     while len(durations) < len(scene_image_paths):
@@ -335,11 +417,28 @@ def _run_pipeline_sync(
 
     for i, (img_path, dur) in enumerate(zip(scene_image_paths, durations)):
         clip_path = temp_dir / f"clip_{i:03d}.mp4"
-        
+
+        # Phase 3G: artifact-level idempotency — reuse valid existing clip
+        if clip_path.exists() and clip_path.stat().st_size > 0:
+            logger.info("[video_pipeline %s] Reusing existing clip %d: %s", job_id, i + 1, clip_path.name)
+            clip_paths.append(clip_path)
+            manifest.scene_entries.append(SceneManifestEntry(
+                scene_number=i + 1,
+                duration_seconds=dur,
+                background_type=scenes[i].get("background_type") if i < len(scenes) else None,
+                background_path=scenes[i].get("background_path") if i < len(scenes) else None,
+                clip_path=str(clip_path),
+            ))
+            pct = 35 + int((i + 1) / n_clips * 20)
+            step(pct, f"Built clip {i + 1}/{n_clips}...")
+            continue
+
         # Phase 3E.4: Check if scene has video background
         scene = scenes[i] if i < len(scenes) else {}
         scene_bg_type = scene.get("background_type")
-        
+        _manifest_fallback = False
+        _manifest_fallback_reason = None
+
         if scene_bg_type == "local_video" and scene.get("background_path"):
             # Apply video background during clip building
             video_path = Path(scene["background_path"])
@@ -350,7 +449,7 @@ def _run_pipeline_sync(
                 background_loop=scene.get("background_loop", True),
                 background_start_time=scene.get("background_start_time", 0.0),
             )
-            
+
             video_clip = apply_video_background_to_scene(
                 img_path,
                 video_path,
@@ -360,12 +459,13 @@ def _run_pipeline_sync(
                 height,
                 scene_bg_config,
             )
-            
+
             if video_clip:
                 clip_paths.append(video_clip)
                 logger.info("[video_pipeline %s] Video background clip %d/%d built: %.1fs", job_id, i + 1, n_clips, dur)
             else:
                 # Fallback to standard clip if video processing fails
+                # This is the existing valid fallback path — not inventing a new one.
                 sc = SceneClip(
                     scene_number=i + 1,
                     image_path=img_path,
@@ -373,7 +473,16 @@ def _run_pipeline_sync(
                 )
                 build_scene_clip(sc, clip_path, width, height)
                 clip_paths.append(clip_path)
-                logger.warning("[video_pipeline %s] Video background failed for scene %d, using fallback", job_id, i + 1)
+                _manifest_fallback = True
+                _manifest_fallback_reason = "video background apply_video_background_to_scene returned None — fell back to Ken Burns image clip"
+                manifest.add_fallback(
+                    f"Scene {i + 1}: video background failed, fell back to Ken Burns image clip"
+                )
+                logger.warning(
+                    "[video_pipeline %s] Scene %d: video background processing failed — "
+                    "falling back to Ken Burns image clip (existing fallback path).",
+                    job_id, i + 1,
+                )
         else:
             # Standard image-based clip
             sc = SceneClip(
@@ -384,7 +493,20 @@ def _run_pipeline_sync(
             build_scene_clip(sc, clip_path, width, height)
             clip_paths.append(clip_path)
             logger.info("[video_pipeline %s] Clip %d/%d built: %.1fs", job_id, i + 1, n_clips, dur)
-        
+
+        # Phase 3G: record this scene in the manifest
+        _scene_bg_type = (scene.get("background_type") if scene else None)
+        _scene_bg_path = (scene.get("background_path") if scene else None)
+        manifest.scene_entries.append(SceneManifestEntry(
+            scene_number=i + 1,
+            duration_seconds=dur,
+            background_type=_scene_bg_type,
+            background_path=_scene_bg_path,
+            clip_path=str(clip_paths[-1]) if clip_paths else None,
+            fallback_used=_manifest_fallback,
+            fallback_reason=_manifest_fallback_reason,
+        ))
+
         # Update progress between 35 and 55
         pct = 35 + int((i + 1) / n_clips * 20)
         step(pct, f"Built clip {i + 1}/{n_clips}...")
@@ -396,6 +518,8 @@ def _run_pipeline_sync(
     step(58, "Concatenating scene clips...")
     logger.info("[video_pipeline %s] Concatenating %d clips", job_id, len(clip_paths))
     concat_path = temp_dir / "concat.mp4"
+    # Phase 3G: update manifest clip list before heavy operation
+    manifest.clip_paths = [str(p) for p in clip_paths]
     concatenate_clips(clip_paths, concat_path, temp_dir)
     logger.info("[video_pipeline %s] Clips concatenated: %s", job_id, concat_path.name)
     step(65, "Clips concatenated.")
@@ -535,18 +659,93 @@ def _run_pipeline_sync(
     # ── 13. Verify output ──────────────────────────────────────────────────
     step(96, "Verifying output...")
     logger.info("[video_pipeline %s] Verifying final output: %s", job_id, final_path)
+
+    # Basic existence + size check
     if not final_path.exists() or final_path.stat().st_size == 0:
         logger.error("[video_pipeline %s] Final MP4 was not created or is empty: %s", job_id, final_path)
         raise VideoGenerationError("Final MP4 was not created or is empty.")
 
+    # Phase 3G: ffprobe-based validation
     probe = probe_video(str(final_path))
-    duration = probe.get("duration", 0.0)
-    size_bytes = probe.get("size_bytes", 0)
+    duration = probe.get("duration", 0.0) or 0.0
+    size_bytes = probe.get("size_bytes", 0) or 0
+    streams = probe.get("streams", [])
+
+    # 1. Duration must be finite and > 0
+    import math as _math
+    if not _math.isfinite(duration) or duration <= 0:
+        raise VideoGenerationError(
+            f"Final MP4 has invalid duration: {duration!r}. "
+            "The encode may have failed silently."
+        )
+
+    # 2. Must have at least one video stream
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+    if not video_streams:
+        raise VideoGenerationError(
+            "Final MP4 has no video stream. "
+            "The encode may have produced an audio-only or corrupt file."
+        )
+
+    # 3. Check resolution matches expected
+    vs = video_streams[0]
+    actual_w = vs.get("width", 0)
+    actual_h = vs.get("height", 0)
+    if actual_w != width or actual_h != height:
+        logger.warning(
+            "[video_pipeline %s] Resolution mismatch: expected %dx%d, got %dx%d. "
+            "FFmpeg may have adjusted dimensions for codec alignment.",
+            job_id, width, height, actual_w, actual_h,
+        )
 
     logger.info(
-        "[video_pipeline %s] Video verified: %.1fs, %.1f MB, %d streams",
-        job_id, duration, size_bytes / 1024 / 1024, len(probe.get("streams", [])),
+        "[video_pipeline %s] Video verified OK: %.1fs, %.1f MB, %dx%d, %d stream(s)",
+        job_id, duration, size_bytes / 1024 / 1024, actual_w, actual_h, len(streams),
     )
+    step(97, "Output verified.")
+
+    elapsed = time.perf_counter() - t_start
+
+    # ── Phase 3G: Finalise and write render manifest ───────────────────────
+    manifest.production_stage = ProductionStage.COMPLETED
+    manifest.final_mp4_path = str(final_path)
+    manifest.final_duration_seconds = duration
+    manifest.final_file_size_bytes = size_bytes
+    manifest.elapsed_seconds = elapsed
+    try:
+        manifest.final_sha256 = compute_sha256(final_path)
+    except Exception as _sha_exc:
+        logger.warning("[video_pipeline %s] SHA-256 failed: %s", job_id, _sha_exc)
+
+    # ── Phase 3H: Write persistent manifest BEFORE cleanup ────────────────────
+    # Import the persistent path helper (added in Phase 3H).
+    from backend.services.video.media_utils import output_manifest_path
+    persistent_manifest_path = output_manifest_path(job_id)
+    manifest_write_error: str | None = None
+
+    try:
+        # 1. Write to persistent location.
+        manifest.save(persistent_manifest_path)
+
+        # 2. Verify the file exists and contains valid JSON with expected keys.
+        _mf_text = persistent_manifest_path.read_text(encoding="utf-8")
+        _mf_check = __import__("json").loads(_mf_text)
+        if _mf_check.get("job_id") != job_id:
+            raise ValueError(
+                f"Manifest integrity check failed: job_id mismatch "
+                f"(expected {job_id!r}, got {_mf_check.get('job_id')!r})"
+            )
+        logger.info(
+            "[video_pipeline %s] Persistent manifest written and verified: %s",
+            job_id, persistent_manifest_path,
+        )
+    except Exception as _mf_exc:
+        manifest_write_error = str(_mf_exc)
+        logger.warning(
+            "[video_pipeline %s] Manifest persistence failed: %s",
+            job_id, _mf_exc,
+        )
+        # Do NOT raise — the video itself is valid. Failure is recorded below.
 
     # ── 14. Cleanup temp files ─────────────────────────────────────────────
     step(98, "Cleaning up...")
@@ -554,7 +753,6 @@ def _run_pipeline_sync(
     cleanup_temp(job_id, keep_on_failure=False)
     logger.info("[video_pipeline %s] Temp files cleaned", job_id)
 
-    elapsed = time.perf_counter() - t_start
     logger.info(
         "Pipeline completed in %.1fs: job_id=%s output=%s",
         elapsed, job_id, final_path.name,
@@ -571,6 +769,10 @@ def _run_pipeline_sync(
         "elapsed_seconds": elapsed,
         "music_used": music_path is not None,
         "captions_generated": caption_srt_path.exists() if caption_srt_path else False,
+        "manifest": manifest.to_dict(),            # Phase 3G in-memory dict
+        # Phase 3H: persistent path (None if write/verify failed)
+        "manifest_path": str(persistent_manifest_path) if not manifest_write_error else None,
+        "manifest_write_error": manifest_write_error,  # None on success
     }
 
 

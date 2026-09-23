@@ -305,16 +305,37 @@ class AIVisualProvider(VisualProvider):
 
         # ── Handle missing/empty prompt ────────────────────────────────────
         if not visual_prompt or not visual_prompt.strip():
+            # Phase 3F.6: use topic and style from scene_context for richer fallback
+            topic = (scene_context or {}).get("topic", "")
+            visual_style = (scene_context or {}).get("visual_style", "cinematic")
+            if topic:
+                visual_prompt = (
+                    f"Abstract {aspect_ratio} composition related to {topic}, "
+                    f"{visual_style} style, suitable for video background"
+                )
+            else:
+                visual_prompt = f"Abstract background, {aspect_ratio} composition, {visual_style} style, cinematic"
             logger.warning(
                 "[AI provider] job=%s scene=%d: no visual_prompt, "
-                "using generic fallback prompt",
+                "using context-aware fallback prompt",
                 job_id, scene_num,
             )
-            visual_prompt = f"Abstract background, {aspect_ratio} composition, cinematic"
+
+        # ── Phase 3F.6: Augment prompt with composition and style suffix ───
+        # The cache key is built from the ORIGINAL prompt (pre-augmentation) so
+        # that previously cached images are still found after this change.
+        # Only the prompt sent to the backend (and recorded in metadata) is augmented.
+        from backend.services.visual_prompt_generator import (
+            get_composition_hint,
+            get_shot_type,
+            truncate_prompt,
+        )
+        visual_style_ctx = (scene_context or {}).get("visual_style", "cinematic")
+        composition_hint = get_composition_hint(aspect_ratio)
 
         width, height = aspect_ratio_to_dimensions(aspect_ratio)
 
-        # ── Cache check ────────────────────────────────────────────────────
+        # ── Cache check — uses pre-augmentation prompt as stable key ───────
         cache_key = build_cache_key(visual_prompt, aspect_ratio, model, self._backend.backend_name)
         output_dir = get_scene_output_dir(job_id)
         # Primary filename: scene_NNN_<first8 of cache>.jpg
@@ -340,6 +361,17 @@ class AIVisualProvider(VisualProvider):
                     "scene_number": scene_num,
                 },
             )
+
+        # ── Augment prompt for better quality (only for new generations) ───
+        augmentation_needed = not any(
+            kw in visual_prompt.lower()
+            for kw in ("framing", "composition", "centered", "shot", "wide", "close")
+        )
+        if augmentation_needed:
+            visual_prompt = f"{visual_prompt}, {composition_hint}"
+
+        # Apply final length truncation before sending to backend
+        visual_prompt = truncate_prompt(visual_prompt)
 
         # ── Generate ───────────────────────────────────────────────────────
         logger.info(

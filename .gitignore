@@ -98,6 +98,10 @@ patch_tests.py
 patch_tests2.py
 patch_tests3.py
 
+# Local debug dumps and E2E logs
+dump*.txt
+e2e_logs.txt
+
 # ── Temporary/invalid token files ────────────────────────────────────────────
 token.json.invalid
 
