@@ -45,6 +45,9 @@ import backend.queue_models     # noqa: F401
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # Phase 3I: add audio profile columns to existing DBs
+    from backend.migrations.phase_3i import run as _phase_3i_migrate
+    _phase_3i_migrate(engine)
     # Phase 3A/3B: start the queue worker on backend startup
     # Controlled by QUEUE_AUTO_RUN env var (default: true)
     auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
