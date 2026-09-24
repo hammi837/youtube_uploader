@@ -298,6 +298,9 @@ export interface QueueJob {
   // Phase 3G: Production observability
   production_stage: string | null;
   summary: string | null;
+  // Phase 3I: Audio profiles
+  tts_voice: string | null;
+  music_style: string | null;
   // Phase 3H: Manifest availability flag
   manifest_available: boolean;
 }
@@ -385,6 +388,9 @@ export interface BulkQueueRequest {
   background_path?: string;
   background_color?: string;
   background_fit?: string;
+  // Phase 3I: Audio profiles
+  tts_voice?: string;
+  music_style?: string;
 }
 
 export interface BulkQueueResponse {
