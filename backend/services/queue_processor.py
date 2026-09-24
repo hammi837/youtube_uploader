@@ -237,6 +237,9 @@ def _run_full_pipeline(job_id: str) -> None:
         qj = db_check.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
         existing_video_job_id = qj.video_job_id if qj else None
         content_project_id_existing = qj.content_project_id if qj else None
+        # Phase 3I: Audio profiles
+        tts_voice_for_job   = getattr(qj, "tts_voice",   None) if qj else None
+        music_style_for_job = getattr(qj, "music_style", None) if qj else None
     finally:
         db_check.close()
 
@@ -336,7 +339,7 @@ def _run_full_pipeline(job_id: str) -> None:
     # ── Stage 2: TTS narration (15–30%) ───────────────────────────────────
     _update_job(job_id, status=QueueStatus.GENERATING_AUDIO, stage="Generating narration…", progress=15, production_stage="generating_audio")
     log_job(job_id, "TTS narration started.", stage="tts")
-    audio_id = _stage_generate_audio(job_id, content_project_id)
+    audio_id = _stage_generate_audio(job_id, content_project_id, tts_voice=tts_voice_for_job)
     log_job(job_id, f"TTS completed: audio_id={audio_id}", stage="tts")
 
     # ── Stage 3: Video generation (30–87%) ────────────────────────────────
@@ -490,7 +493,7 @@ def _stage_research_and_script(job_id: str) -> str:
         db.close()
 
 
-def _stage_generate_audio(job_id: str, content_project_id: str) -> Optional[str]:
+def _stage_generate_audio(job_id: str, content_project_id: str, tts_voice: str | None = None) -> Optional[str]:
     """
     Generate TTS narration using existing Phase 2B/2C services.
     Returns audio_id (or None if failed — video pipeline handles missing audio).
@@ -526,7 +529,8 @@ def _stage_generate_audio(job_id: str, content_project_id: str) -> Optional[str]
             raise RuntimeError("Content project or script not found for TTS.")
 
         narration_text = extract_narration_text(project.script)
-        voice = _os.getenv("TTS_DEFAULT_VOICE", "en-US-AriaNeural")
+        # Phase 3I: use per-job voice if specified, else env default
+        voice = tts_voice or _os.getenv("TTS_DEFAULT_VOICE", "en-US-AriaNeural")
 
         output_dir = get_data_dir() / "audio"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -739,6 +743,10 @@ def _stage_generate_video(
             background_path = qj_template.background_path if qj_template else None
             background_color = qj_template.background_color if qj_template else None
             background_fit = qj_template.background_fit if qj_template else "cover"
+            
+            # Phase 3I: Audio profiles
+            tts_voice_for_job = qj_template.tts_voice if qj_template else None
+            music_style_for_job = qj_template.music_style if qj_template else None
 
             vj = VideoGenerationJob(
                 id=vj_id,
@@ -971,6 +979,9 @@ def _stage_generate_video(
             fps=30,
             captions_enabled=True,
             music_enabled=True,
+            tts_voice=tts_voice_for_job,          # Phase 3I
+            music_style=music_style_for_job,      # Phase 3I
+            music_ducking_enabled=True,           # Phase 3I: always attempt ducking
             progress_callback=_progress_cb,
             template_id=template_id,  # Phase 3E.1
             aspect_ratio=aspect_ratio,  # Phase 3E.2
@@ -1008,12 +1019,21 @@ def _stage_generate_video(
         caps        = result.get("captions_generated", False)
         output_name = Path(result.get("output_path", "")).name if result.get("output_path") else "unknown"
 
+        music_str = "no"
+        if music_used:
+            ducking = result.get("ducking_used", False)
+            style_used = result.get("music_style") or "default"
+            music_str = f"yes (style={style_used}, ducking={'yes' if ducking else 'failed/flat'})"
+            
+        voice_str = result.get("tts_voice_used") or "default"
+
         summary_text = (
             f"Video produced: {output_name} | "
             f"duration={duration_s:.1f}s | "
             f"size={size_mb:.1f} MB | "
             f"elapsed={elapsed_s:.0f}s | "
-            f"music={'yes' if music_used else 'no'} | "
+            f"music={music_str} | "
+            f"voice={voice_str} | "
             f"captions={'yes' if caps else 'no'}"
         )
 
