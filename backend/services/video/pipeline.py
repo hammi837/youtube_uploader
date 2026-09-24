@@ -63,7 +63,10 @@ async def run_pipeline(
     fps: int,
     captions_enabled: bool,
     music_enabled: bool,
-    progress_callback: Callable[[int, str], None],
+    tts_voice: str | None = None,       # Phase 3I: per-job TTS voice
+    music_style: str | None = None,     # Phase 3I: music style category
+    music_ducking_enabled: bool = True, # Phase 3I: enable speech/music ducking
+    progress_callback: Callable[[int, str], None] = lambda p, s: None,
     template_id: str = "minimal_dark",  # Phase 3E.1
     aspect_ratio: str = "16:9",  # Phase 3E.2
 ) -> dict:
@@ -85,6 +88,9 @@ async def run_pipeline(
         fps,
         captions_enabled,
         music_enabled,
+        tts_voice,
+        music_style,
+        music_ducking_enabled,
         progress_callback,
         template_id,  # Phase 3E.1
         aspect_ratio,  # Phase 3E.2
@@ -102,7 +108,10 @@ def _run_pipeline_sync(
     fps: int,
     captions_enabled: bool,
     music_enabled: bool,
-    progress_callback: Callable[[int, str], None],
+    tts_voice: str | None = None,
+    music_style: str | None = None,
+    music_ducking_enabled: bool = True,
+    progress_callback: Callable[[int, str], None] = lambda p, s: None,
     template_id: str = "minimal_dark",  # Phase 3E.1
     aspect_ratio: str = "16:9",  # Phase 3E.2
 ) -> dict:
@@ -216,7 +225,7 @@ def _run_pipeline_sync(
             step(10, "Generating narration...")
             logger.info("[video_pipeline %s] No audio found, generating inline", job_id)
             audio_record = _generate_narration_inline(
-                db, project, script_rec, job_id, temp_dir
+                db, project, script_rec, job_id, temp_dir, tts_voice=tts_voice
             )
             if audio_record:
                 logger.info("[video_pipeline %s] Inline narration generated: %s", job_id, audio_record.id)
@@ -527,7 +536,11 @@ def _run_pipeline_sync(
     # ── 8. Mix audio ──────────────────────────────────────────────────────
     step(68, "Mixing audio...")
     logger.info("[video_pipeline %s] Starting audio mix", job_id)
-    music_path = find_music_file() if music_enabled else None
+    # Phase 3I: use music_style for targeted track selection
+    if music_enabled:
+        music_path = find_music_file(style=music_style) if music_style else find_music_file()
+    else:
+        music_path = None
     if music_path:
         logger.info("[video_pipeline %s] Background music: %s", job_id, music_path.name)
     else:
@@ -535,7 +548,18 @@ def _run_pipeline_sync(
 
     audio_mixed_path = temp_dir / "with_audio.mp4"
     logger.info("[video_pipeline %s] Mixing audio: concat=%s, narration=%s, music=%s", job_id, concat_path.name, narration_path.name, music_path.name if music_path else "None")
-    mix_audio(concat_path, narration_path, music_path, audio_mixed_path)
+    _, ducking_used = mix_audio(
+        concat_path, narration_path, music_path, audio_mixed_path,
+        ducking_enabled=music_ducking_enabled,
+    )
+    if music_path:
+        if ducking_used:
+            logger.info("[video_pipeline %s] Ducking applied to music mix.", job_id)
+        else:
+            logger.info(
+                "[video_pipeline %s] Flat mix used (ducking disabled or failed).", job_id
+            )
+            manifest.add_fallback("Audio ducking failed; used flat music mix.")
     logger.info("[video_pipeline %s] Audio mixed: %s", job_id, audio_mixed_path.name)
     step(78, "Audio mixed.")
 
@@ -768,6 +792,9 @@ def _run_pipeline_sync(
         "probe": probe,
         "elapsed_seconds": elapsed,
         "music_used": music_path is not None,
+        "ducking_used": ducking_used,
+        "music_style": music_style,
+        "tts_voice_used": tts_voice,
         "captions_generated": caption_srt_path.exists() if caption_srt_path else False,
         "manifest": manifest.to_dict(),            # Phase 3G in-memory dict
         # Phase 3H: persistent path (None if write/verify failed)
@@ -778,7 +805,7 @@ def _run_pipeline_sync(
 
 # ── Inline narration generation ───────────────────────────────────────────────
 
-def _generate_narration_inline(db, project, script_rec, job_id: str, temp_dir: Path):
+def _generate_narration_inline(db, project, script_rec, job_id: str, temp_dir: Path, tts_voice: str | None = None):
     """
     Generate narration audio using the existing TTS system when no audio
     record exists for the project.
@@ -795,7 +822,7 @@ def _generate_narration_inline(db, project, script_rec, job_id: str, temp_dir: P
     logger.info("Generating narration inline for job %s", job_id)
     try:
         narration_text = extract_narration_text(script_rec)
-        voice = os.getenv("TTS_DEFAULT_VOICE", "en-US-AriaNeural")
+        voice = tts_voice or os.getenv("TTS_DEFAULT_VOICE", "en-US-AriaNeural")
         output_dir = get_data_dir() / "audio"
         output_dir.mkdir(parents=True, exist_ok=True)
 
