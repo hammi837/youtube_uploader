@@ -28,6 +28,17 @@ from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
+# ── Phase 3I: Audio ducking constants ─────────────────────────────────────────
+# Target music attenuation when narration is active.
+# Expressed as FFmpeg compressor ratio (8 ≈ -18dB, 4 ≈ -12dB, 3 ≈ -10dB).
+# Override via MUSIC_DUCK_RATIO env var.
+import os as _os
+_MUSIC_DUCK_RATIO_DEFAULT = float(_os.getenv("MUSIC_DUCK_RATIO", "4.0"))  # ~-12dB
+_MUSIC_DUCK_ATTACK_MS     = float(_os.getenv("MUSIC_DUCK_ATTACK_MS",   "15.0"))
+_MUSIC_DUCK_RELEASE_MS    = float(_os.getenv("MUSIC_DUCK_RELEASE_MS",  "500.0"))
+# Base music volume during ducked mode (higher than flat mode since ducking reduces it)
+_MUSIC_DUCK_BASE_VOLUME   = float(_os.getenv("MUSIC_DUCK_BASE_VOLUME", "0.20"))
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -279,54 +290,143 @@ def concatenate_clips(
 
 # ── Audio mix ─────────────────────────────────────────────────────────────────
 
+def _mix_music_ducked(
+    video_with_narration: Path,
+    music_path: Path,
+    output_path: Path,
+    video_duration: float,
+    duck_ratio: float | None = None,
+) -> Path:
+    """
+    Mix background music into a video+narration using FFmpeg sidechain ducking.
+
+    The narration acts as the sidechain signal: when the narrator speaks,
+    the music is automatically attenuated by approximately -10 to -12 dB.
+    When the narrator pauses, the music returns to its base volume.
+
+    Uses sidechaincompress with:
+      - Base music volume: _MUSIC_DUCK_BASE_VOLUME (default 0.20)
+      - Ratio: _MUSIC_DUCK_RATIO_DEFAULT (~-12 dB, configurable via MUSIC_DUCK_RATIO)
+      - Attack:   _MUSIC_DUCK_ATTACK_MS  ms (how fast ducking engages)
+      - Release:  _MUSIC_DUCK_RELEASE_MS ms (how fast music recovers)
+
+    Raises subprocess.SubprocessError or similar on FFmpeg failure.
+    Callers MUST catch and fall back to flat mix.
+    """
+    ff = _ffmpeg()
+    ratio = duck_ratio if duck_ratio is not None else _MUSIC_DUCK_RATIO_DEFAULT
+    base_vol = _MUSIC_DUCK_BASE_VOLUME
+
+    audio_sample_rate = _get_audio_sample_rate(str(video_with_narration))
+    if audio_sample_rate >= 44100:
+        audio_bitrate = "192k"
+    elif audio_sample_rate >= 22050:
+        audio_bitrate = "128k"
+    else:
+        audio_bitrate = "64k"
+
+    # Sidechain ducking filter graph:
+    #  [0:a]  = narration track (from video with narration)
+    #  [1:a]  = music track
+    #
+    #  1. Split narration → nar1 (output) + nar2 (sidechain control)
+    #  2. Loop+trim music, set base volume → bgm
+    #  3. Duck bgm using nar2 as sidechain → bgm_ducked
+    #  4. Mix nar1 + bgm_ducked → aout
+    audio_filter = (
+        f"[0:a]asplit[nar1][nar2];"
+        f"[1:a]aloop=loop=-1:size=2e+09,atrim=duration={video_duration:.3f},"
+        f"volume={base_vol:.3f}[bgm];"
+        f"[bgm][nar2]sidechaincompress="
+        f"threshold=0.01:ratio={ratio:.1f}:"
+        f"attack={_MUSIC_DUCK_ATTACK_MS:.0f}:release={_MUSIC_DUCK_RELEASE_MS:.0f}:"
+        f"level_in=1:level_sc=1[bgm_ducked];"
+        f"[nar1][bgm_ducked]amix=inputs=2:duration=first:dropout_transition=3[aout]"
+    )
+    cmd = [
+        ff, "-y",
+        "-i", str(video_with_narration),
+        "-i", str(music_path),
+        "-filter_complex", audio_filter,
+        "-map", "0:v:0",
+        "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", audio_bitrate,
+        "-shortest",
+        str(output_path),
+    ]
+    _run(cmd, timeout=300, label="mix_music_ducked")
+    return output_path
+
+
 def mix_audio(
     video_path: Path,
     narration_path: Path,
     music_path: Optional[Path],
     output_path: Path,
     music_volume: float = 0.08,
-) -> Path:
+    ducking_enabled: bool = True,
+) -> tuple[Path, bool]:
     """
     Add narration (and optional background music) to the concatenated video.
 
     - Narration is full volume.
-    - Music is looped/trimmed to match narration and mixed at music_volume.
+    - Music is looped/trimmed to match narration duration.
+    - When music_path is provided and ducking_enabled=True (Phase 3I):
+        Speech/music ducking is applied using FFmpeg sidechaincompress.
+        If ducking fails, falls back to flat amix (music_volume parameter).
+    - When music_path is None or music_enabled=False, only narration is added.
+
+    Returns:
+        (output_path, ducking_used)
+        ducking_used is True only when ducking FFmpeg command succeeded.
     """
-    ff = _ffmpeg()
+    import logging as _logging
+    _logger = _logging.getLogger(__name__)
+
     video_duration = _get_duration(str(video_path))
 
     if music_path and music_path.exists():
-        # Mix narration + music under it
-        # adelay/aloop music to match duration; amix with weights
-        audio_filter = (
-            f"[1:a]aloop=loop=-1:size=2e+09,atrim=duration={video_duration:.3f},"
-            f"volume={music_volume:.3f}[music];"
-            f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]"
-        )
-        cmd = [
-            ff, "-y",
-            "-i", str(narration_path),
-            "-i", str(music_path),
-            "-filter_complex", audio_filter,
-            "-map", "0:v:0",  # will be overridden below — we re-add video
-            "-i", str(video_path),
-            "-map", "2:v:0",
-            "-map", "[aout]",
-            "-c:v", "copy",
-            "-c:a", "aac", "-b:a", "192k",
-            "-shortest",
-            str(output_path),
-        ]
-        # Simpler approach: separate video+narration merge, then add music
-        # Use two-step to avoid complex filter graph issues on older FFmpeg
+        # Step 1: merge narration into the video
         narration_only = output_path.with_suffix(".naronly.mp4")
         _merge_video_audio(video_path, narration_path, narration_only)
-        _mix_music(narration_only, music_path, output_path, music_volume, video_duration)
+
+        # Step 2: mix music (try ducking first, fall back to flat)
+        ducking_used = False
+        if ducking_enabled:
+            duck_output = output_path.with_suffix(".duck_attempt.mp4")
+            try:
+                _mix_music_ducked(
+                    narration_only, music_path, duck_output, video_duration,
+                )
+                # Verify output is non-empty
+                if duck_output.exists() and duck_output.stat().st_size > 0:
+                    duck_output.replace(output_path)
+                    ducking_used = True
+                    _logger.info(
+                        "[mix_audio] Ducking succeeded: output=%s", output_path.name
+                    )
+                else:
+                    duck_output.unlink(missing_ok=True)
+                    raise RuntimeError("Ducking produced empty output")
+            except Exception as duck_exc:
+                _logger.warning(
+                    "[mix_audio] Ducking failed (%s) — falling back to flat mix.",
+                    duck_exc,
+                )
+                duck_output.unlink(missing_ok=True)
+                # Flat mix fallback
+                _mix_music(narration_only, music_path, output_path, music_volume, video_duration)
+        else:
+            _mix_music(narration_only, music_path, output_path, music_volume, video_duration)
+
         narration_only.unlink(missing_ok=True)
     else:
         _merge_video_audio(video_path, narration_path, output_path)
+        ducking_used = False
 
-    return output_path
+    return output_path, ducking_used
+
 
 
 def _merge_video_audio(video_path: Path, audio_path: Path, output_path: Path) -> Path:
