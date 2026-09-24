@@ -168,6 +168,10 @@ class ContentQueueJob(Base):
     # ── Phase 3G: Production summary ───────────────────────────────────────────
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # concise production report
 
+    # ── Phase 3I: Audio profiles ────────────────────────────────────────────────
+    tts_voice: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # e.g. 'en-GB-SoniaNeural'; None → env default
+    music_style: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # e.g. 'lofi'; None → flat default music
+
     # ── Error tracking ─────────────────────────────────────────────────────
     error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     last_error_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -261,6 +265,19 @@ class BulkQueueRequest(BaseModel):
     background_path: Optional[str] = Field(None, description="Path to local background asset")
     background_color: Optional[str] = Field(None, description="Solid color for solid_color background")
     background_fit: Optional[str] = Field("cover", description="How to fit background: cover, contain, fill")
+    
+    # ── Phase 3I: Audio profiles ────────────────────────────────────────────────
+    tts_voice: Optional[str] = Field(
+        None,
+        max_length=100,
+        description="TTS voice name (e.g. 'en-GB-SoniaNeural'). None uses TTS_DEFAULT_VOICE env var.",
+    )
+    music_style: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Music style category (subfolder of data/assets/music/). None uses default flat mix.",
+    )
+
 
     @field_validator("topics")
     @classmethod
@@ -312,6 +329,34 @@ class BulkQueueRequest(BaseModel):
         if not is_valid_aspect_ratio(v):
             return DEFAULT_ASPECT_RATIO
         return v
+
+    @field_validator("music_style")
+    @classmethod
+    def validate_music_style(cls, v: Optional[str]) -> Optional[str]:
+        """Reject unsafe music_style values. Must be a simple safe identifier."""
+        import re
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        # Whitelist: alphanumeric + hyphens/underscores, max 50 chars, no path separators
+        if not re.match(r'^[a-zA-Z0-9_-]{1,50}$', v):
+            raise ValueError(
+                f"music_style '{v}' is invalid. Use only letters, digits, hyphens, or underscores "
+                "(e.g. 'lofi', 'epic', 'ambient'). Path separators are not allowed."
+            )
+        return v
+
+    @field_validator("tts_voice")
+    @classmethod
+    def validate_tts_voice(cls, v: Optional[str]) -> Optional[str]:
+        """Strip whitespace from tts_voice."""
+        if v is None:
+            return None
+        v = v.strip()
+        return v if v else None
+
 
 
 class QueueJobResponse(BaseModel):
@@ -377,6 +422,10 @@ class QueueJobResponse(BaseModel):
 
     # ── Phase 3H: Manifest observability ───────────────────────────────────────
     manifest_available: bool = False         # True when data/manifests/{id}.json exists
+
+    # ── Phase 3I: Audio profiles ────────────────────────────────────────────────
+    tts_voice: Optional[str] = None      # TTS voice used for this job
+    music_style: Optional[str] = None    # Music style used for this job
 
     model_config = {"from_attributes": True}
 
@@ -469,6 +518,10 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         custom_description=getattr(job, "custom_description", None),
         custom_tags=custom_tags,
         youtube_studio_url=youtube_studio_url,
+        
+        # Phase 3I: Audio profiles
+        tts_voice=getattr(job, "tts_voice", None),
+        music_style=getattr(job, "music_style", None),
         # Phase 3E.1: Template support
         template_id=getattr(job, "template_id", "minimal_dark"),
         # Phase 3E.2: Aspect ratio support
