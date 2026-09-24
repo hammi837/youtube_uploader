@@ -257,7 +257,12 @@ export function getVideoCaptionUrl(jobId: string): string {
   return `${BASE_URL}/api/video-generation/${jobId}/captions`;
 }
 
-// ── Phase 3A: Content Queue ───────────────────────────────────────────────────
+// ── Phase 3A/3I: Content Queue ────────────────────────────────────────────────
+
+export async function listMusicStyles(): Promise<string[]> {
+  const res = await fetch(`${BASE_URL}/api/queue/music-styles`);
+  return handleResponse<string[]>(res);
+}
 
 export async function createQueueJobs(data: BulkQueueRequest): Promise<BulkQueueResponse> {
   const res = await fetch(`${BASE_URL}/api/queue`, {
