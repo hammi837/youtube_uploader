@@ -151,6 +151,9 @@ def create_queue_jobs(
             background_path=body.background_path,
             background_color=body.background_color,
             background_fit=body.background_fit,
+            # Phase 3I: Audio profiles
+            tts_voice=body.tts_voice,
+            music_style=body.music_style,
         )
         db.add(job)
         jobs.append(job)
@@ -246,6 +249,15 @@ def get_queue_health_endpoint() -> QueueHealthResponse:
 def get_queue_stats_endpoint() -> QueueStatsResponse:
     """Return detailed queue statistics including avg processing time."""
     return QueueStatsResponse(**get_queue_stats())
+
+
+# ── GET /api/queue/music-styles ───────────────────────────────────────────────
+
+@router.get("/music-styles", response_model=list[str])
+def get_music_styles():
+    """Phase 3I: List available background music style categories."""
+    from backend.services.video.media_utils import list_music_styles
+    return list_music_styles()
 
 
 # ── GET /api/queue/{job_id} ───────────────────────────────────────────────────
