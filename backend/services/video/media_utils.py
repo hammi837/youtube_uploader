@@ -109,11 +109,68 @@ def cleanup_temp(job_id: str, keep_on_failure: bool = False) -> None:
         logger.warning("Could not clean temp dir %s: %s", temp, exc)
 
 
-def find_music_file() -> Path | None:
-    """Return the first music file found in the assets/music directory."""
+# ── Music file discovery constants ────────────────────────────────────────────
+# Supported audio formats for background music.
+_MUSIC_EXTENSIONS = ("*.mp3", "*.wav", "*.m4a")
+
+
+def list_music_styles() -> list[str]:
+    """
+    Discover available music style categories from subdirectories of the
+    music assets directory.
+
+    A style is a subdirectory that contains at least one supported audio file.
+    Returns style names sorted alphabetically (deterministic).
+
+    Example:
+        data/assets/music/lofi/track.mp3  → style 'lofi'
+        data/assets/music/epic/bg.mp3     → style 'epic'
+    """
     music_dir = get_assets_music_dir()
-    for ext in ("*.mp3", "*.wav", "*.m4a"):
-        files = list(music_dir.glob(ext))
+    styles: list[str] = []
+    for subdir in sorted(music_dir.iterdir()):  # sorted → deterministic
+        if subdir.is_dir():
+            for ext in _MUSIC_EXTENSIONS:
+                if list(subdir.glob(ext)):
+                    styles.append(subdir.name)
+                    break
+    return styles
+
+
+def find_music_file(style: str | None = None) -> Path | None:
+    """
+    Return the first music file for the given style, or from the root
+    music directory when style is None.
+
+    Phase 3I: If style is provided:
+      1. Resolve to data/assets/music/<style>/ directory.
+      2. The style name MUST already be validated (alphanumeric, no path
+         separators) before calling this function.
+      3. Return the first file alphabetically (deterministic).
+      4. If the style directory does not exist or has no files, return None
+         (caller may fall back to root or no music).
+
+    When style is None (default), behaves exactly as before Phase 3I:
+      - Returns first file in root data/assets/music/ directory.
+
+    Supported formats: .mp3, .wav, .m4a
+    """
+    music_dir = get_assets_music_dir()
+
+    if style:
+        # Resolve the style subdirectory
+        style_dir = music_dir / style
+        if not style_dir.is_dir():
+            return None
+        for ext in _MUSIC_EXTENSIONS:
+            files = sorted(style_dir.glob(ext))  # sorted → deterministic
+            if files:
+                return files[0]
+        return None
+
+    # Default: root music directory (pre-Phase-3I behavior)
+    for ext in _MUSIC_EXTENSIONS:
+        files = sorted(music_dir.glob(ext))  # sorted for determinism
         if files:
             return files[0]
     return None
