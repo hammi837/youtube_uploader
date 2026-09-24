@@ -158,6 +158,13 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [aspectRatios, setAspectRatios] = useState<AspectRatio[]>([]);
   // Phase 3E.3: Background selection
   const [selectedBackground, setSelectedBackground] = useState('gradient');
+  
+  // Phase 3I: Audio profiles
+  const [selectedTTSVoice, setSelectedTTSVoice] = useState('');
+  const [ttsVoices, setTTSVoices] = useState<{name: string}[]>([]);
+  const [selectedMusicStyle, setSelectedMusicStyle] = useState('');
+  const [musicStyles, setMusicStyles] = useState<string[]>([]);
+  
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState('');
   const [preview, setPreview]       = useState<string[]>([]);
@@ -190,6 +197,30 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   useEffect(() => {
     loadAspectRatios();
   }, []);
+
+  // Phase 3I: Load audio profiles
+  useEffect(() => {
+    loadTTSVoices();
+    loadMusicStyles();
+  }, []);
+
+  async function loadTTSVoices() {
+    try {
+      const res = await fetch('http://localhost:8000/api/tts/voices');
+      if (res.ok) {
+        const data = await res.json();
+        setTTSVoices(data);
+      }
+    } catch (err) { console.error('Failed to load TTS voices:', err); }
+  }
+
+  async function loadMusicStyles() {
+    try {
+      const { listMusicStyles } = await import('../services/api');
+      const data = await listMusicStyles();
+      setMusicStyles(data);
+    } catch (err) { console.error('Failed to load music styles:', err); }
+  }
 
   async function loadPlaylists() {
     try {
@@ -246,6 +277,8 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         template_id: selectedTemplate,  // Phase 3E.1
         aspect_ratio: selectedAspectRatio,  // Phase 3E.2
         background_type: selectedBackground !== 'gradient' ? selectedBackground : undefined,  // Phase 3E.3
+        tts_voice: selectedTTSVoice || undefined,        // Phase 3I
+        music_style: selectedMusicStyle || undefined,    // Phase 3I
       });
       onSubmitted();
     } catch (err) {
@@ -335,6 +368,32 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         </select>
         <div className="form-hint form-hint--info">
           Auto selects from local images/videos. Local images/videos require files in assets/backgrounds/.
+        </div>
+      </div>
+
+      {/* Phase 3I: Audio Profiles */}
+      <div className="queue-form__row">
+        <div className="form-group">
+          <label className="form-label">🎙️ TTS Voice</label>
+          <select className="form-select" value={selectedTTSVoice}
+            onChange={e => setSelectedTTSVoice(e.target.value)}
+            disabled={submitting}>
+            <option value="">(Default: System Config)</option>
+            {ttsVoices.map(v => (
+              <option key={v.name} value={v.name}>{v.name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label className="form-label">🎵 Music Style</label>
+          <select className="form-select" value={selectedMusicStyle}
+            onChange={e => setSelectedMusicStyle(e.target.value)}
+            disabled={submitting}>
+            <option value="">(Default: Flat Mix from Root)</option>
+            {musicStyles.map(s => (
+              <option key={s} value={s}>{s} (Ducked)</option>
+            ))}
+          </select>
         </div>
       </div>
 
@@ -763,6 +822,8 @@ function QueueJobCard({
         <span>{job.language.toUpperCase()}</span>
         <span>{job.tone}</span>
         <span>{job.aspect_ratio === '9:16' ? '📱 Shorts' : '📺 16:9'}</span>
+        {job.tts_voice && <span>🎙️ {job.tts_voice.replace('en-US-','').replace('Neural','')}</span>}
+        {job.music_style && <span>🎵 {job.music_style}</span>}
         {job.retry_count > 0 && (
           <span style={{color:'var(--color-warning)'}}>
             Retry {job.retry_count}/{job.max_retries}
