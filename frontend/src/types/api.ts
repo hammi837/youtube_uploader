@@ -301,6 +301,8 @@ export interface QueueJob {
   // Phase 3I: Audio profiles
   tts_voice: string | null;
   music_style: string | null;
+  // Phase 3J: Thumbnail style
+  thumbnail_style: string | null;
   // Phase 3H: Manifest availability flag
   manifest_available: boolean;
 }
@@ -391,6 +393,8 @@ export interface BulkQueueRequest {
   // Phase 3I: Audio profiles
   tts_voice?: string;
   music_style?: string;
+  // Phase 3J: Thumbnail style
+  thumbnail_style?: string;
 }
 
 export interface BulkQueueResponse {
