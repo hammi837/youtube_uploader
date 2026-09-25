@@ -230,8 +230,7 @@ def _run_full_pipeline(job_id: str) -> None:
 
     log_job(job_id, "Pipeline started.", stage="init")
 
-    # ── Check for upload-only retry path ──────────────────────────────────────
-    # If a completed video already exists, skip all generation stages.
+    # ── Extract job settings for all paths ─────────────────────────────────────
     db_check = SessionLocal()
     try:
         qj = db_check.query(ContentQueueJob).filter(ContentQueueJob.id == job_id).first()
@@ -240,8 +239,13 @@ def _run_full_pipeline(job_id: str) -> None:
         # Phase 3I: Audio profiles
         tts_voice_for_job   = getattr(qj, "tts_voice",   None) if qj else None
         music_style_for_job = getattr(qj, "music_style", None) if qj else None
+        # Phase 3J: Thumbnail style
+        thumbnail_style_for_job = getattr(qj, "thumbnail_style", None) if qj else None
     finally:
         db_check.close()
+
+    # ── Check for upload-only retry path ──────────────────────────────────────
+    # If a completed video already exists, skip all generation stages.
 
     if existing_video_job_id:
         db_vj = SessionLocal()
@@ -747,6 +751,8 @@ def _stage_generate_video(
             # Phase 3I: Audio profiles
             tts_voice_for_job = qj_template.tts_voice if qj_template else None
             music_style_for_job = qj_template.music_style if qj_template else None
+            # Phase 3J: Thumbnail style
+            thumbnail_style_for_job = qj_template.thumbnail_style if qj_template else None
 
             vj = VideoGenerationJob(
                 id=vj_id,
@@ -982,6 +988,7 @@ def _stage_generate_video(
             tts_voice=tts_voice_for_job,          # Phase 3I
             music_style=music_style_for_job,      # Phase 3I
             music_ducking_enabled=True,           # Phase 3I: always attempt ducking
+            thumbnail_style=thumbnail_style_for_job,  # Phase 3J
             progress_callback=_progress_cb,
             template_id=template_id,  # Phase 3E.1
             aspect_ratio=aspect_ratio,  # Phase 3E.2
@@ -1026,6 +1033,7 @@ def _stage_generate_video(
             music_str = f"yes (style={style_used}, ducking={'yes' if ducking else 'failed/flat'})"
             
         voice_str = result.get("tts_voice_used") or "default"
+        thumbnail_str = result.get("thumbnail_style_used") or "default"
 
         summary_text = (
             f"Video produced: {output_name} | "
@@ -1034,6 +1042,7 @@ def _stage_generate_video(
             f"elapsed={elapsed_s:.0f}s | "
             f"music={music_str} | "
             f"voice={voice_str} | "
+            f"thumbnail_style={thumbnail_str} | "
             f"captions={'yes' if caps else 'no'}"
         )
 
