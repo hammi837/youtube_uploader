@@ -355,6 +355,10 @@ def _run_video_pipeline_task(
                 fps=fps,
                 captions_enabled=captions_enabled,
                 music_enabled=music_enabled,
+                tts_voice=None,  # Phase 3I: not available via this router
+                music_style=None,  # Phase 3I: not available via this router
+                music_ducking_enabled=True,  # Phase 3I: default enabled
+                thumbnail_style=None,  # Phase 3J: not available via this router
                 progress_callback=_update_progress,
                 template_id=template_id,  # Phase 3E.1
                 aspect_ratio=aspect_ratio,  # Phase 3E.2
