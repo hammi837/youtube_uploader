@@ -66,6 +66,7 @@ async def run_pipeline(
     tts_voice: str | None = None,       # Phase 3I: per-job TTS voice
     music_style: str | None = None,     # Phase 3I: music style category
     music_ducking_enabled: bool = True, # Phase 3I: enable speech/music ducking
+    thumbnail_style: str | None = None, # Phase 3J: per-job thumbnail style
     progress_callback: Callable[[int, str], None] = lambda p, s: None,
     template_id: str = "minimal_dark",  # Phase 3E.1
     aspect_ratio: str = "16:9",  # Phase 3E.2
@@ -672,7 +673,18 @@ def _run_pipeline_sync(
     thumb_path = output_thumbnail_path(job_id)
     logger.info("[video_pipeline %s] Generating thumbnail: %s", job_id, thumb_path.name)
     try:
-        generate_thumbnail(title=title, hook=hook, output_path=thumb_path)
+        from backend.services.video.thumbnail import generate_thumbnail_from_frame
+        thumb_result, fallback_actions = generate_thumbnail_from_frame(
+            video_path=final_path,
+            title=title,
+            hook=hook,
+            output_path=thumb_path,
+            style=thumbnail_style or "text_only",
+        )
+        # Record any fallback actions in the manifest
+        for action in fallback_actions:
+            manifest.add_fallback(action)
+            logger.info("[video_pipeline %s] Thumbnail fallback: %s", job_id, action)
         logger.info("[video_pipeline %s] Thumbnail generated: %s", job_id, thumb_path.name)
     except Exception as exc:
         logger.warning("[video_pipeline %s] Thumbnail generation failed: %s", job_id, exc)
@@ -736,6 +748,7 @@ def _run_pipeline_sync(
     manifest.final_duration_seconds = duration
     manifest.final_file_size_bytes = size_bytes
     manifest.elapsed_seconds = elapsed
+    manifest.thumbnail_style = thumbnail_style or "text_only"  # Phase 3J
     try:
         manifest.final_sha256 = compute_sha256(final_path)
     except Exception as _sha_exc:
@@ -795,6 +808,7 @@ def _run_pipeline_sync(
         "ducking_used": ducking_used,
         "music_style": music_style,
         "tts_voice_used": tts_voice,
+        "thumbnail_style_used": thumbnail_style or "text_only",  # Phase 3J
         "captions_generated": caption_srt_path.exists() if caption_srt_path else False,
         "manifest": manifest.to_dict(),            # Phase 3G in-memory dict
         # Phase 3H: persistent path (None if write/verify failed)
