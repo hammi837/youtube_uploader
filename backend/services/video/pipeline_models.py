@@ -188,6 +188,9 @@ class RenderManifest:
     fallback_actions: list[str] = field(default_factory=list)
     error_summary: Optional[str] = None
 
+    # Phase 3J: Thumbnail style
+    thumbnail_style: str = "text_only"
+
     # Timing
     elapsed_seconds: Optional[float] = None
 
@@ -228,6 +231,7 @@ class RenderManifest:
             "fallback_count": self.fallback_count,
             "fallback_actions": self.fallback_actions,
             "error_summary": self.error_summary,
+            "thumbnail_style": self.thumbnail_style,  # Phase 3J
             "elapsed_seconds": self.elapsed_seconds,
         }
 
