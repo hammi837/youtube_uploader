@@ -172,6 +172,9 @@ class ContentQueueJob(Base):
     tts_voice: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)   # e.g. 'en-GB-SoniaNeural'; None → env default
     music_style: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # e.g. 'lofi'; None → flat default music
 
+    # ── Phase 3J: Thumbnail style ────────────────────────────────────────────────
+    thumbnail_style: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # e.g. 'scene_frame'; None → THUMBNAIL_DEFAULT_STYLE
+
     # ── Error tracking ─────────────────────────────────────────────────────
     error_message: Mapped[Optional[str]]  = mapped_column(Text, nullable=True)
     last_error_type: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
@@ -278,6 +281,13 @@ class BulkQueueRequest(BaseModel):
         description="Music style category (subfolder of data/assets/music/). None uses default flat mix.",
     )
 
+    # ── Phase 3J: Thumbnail style ────────────────────────────────────────────────
+    thumbnail_style: Optional[str] = Field(
+        None,
+        max_length=50,
+        description="Thumbnail style: text_only, scene_frame, or scene_frame_overlay. None uses THUMBNAIL_DEFAULT_STYLE env var.",
+    )
+
 
     @field_validator("topics")
     @classmethod
@@ -357,6 +367,22 @@ class BulkQueueRequest(BaseModel):
         v = v.strip()
         return v if v else None
 
+    @field_validator("thumbnail_style")
+    @classmethod
+    def validate_thumbnail_style(cls, v: Optional[str]) -> Optional[str]:
+        """Validate thumbnail_style against whitelist."""
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        ALLOWED = {"text_only", "scene_frame", "scene_frame_overlay"}
+        if v not in ALLOWED:
+            raise ValueError(
+                f"thumbnail_style must be one of {sorted(ALLOWED)} or null. Got: {v}"
+            )
+        return v
+
 
 
 class QueueJobResponse(BaseModel):
@@ -426,6 +452,9 @@ class QueueJobResponse(BaseModel):
     # ── Phase 3I: Audio profiles ────────────────────────────────────────────────
     tts_voice: Optional[str] = None      # TTS voice used for this job
     music_style: Optional[str] = None    # Music style used for this job
+
+    # ── Phase 3J: Thumbnail style ────────────────────────────────────────────────
+    thumbnail_style: Optional[str] = None  # Thumbnail style used for this job
 
     model_config = {"from_attributes": True}
 
@@ -522,6 +551,8 @@ def queue_job_to_response(job: ContentQueueJob) -> QueueJobResponse:
         # Phase 3I: Audio profiles
         tts_voice=getattr(job, "tts_voice", None),
         music_style=getattr(job, "music_style", None),
+        # Phase 3J: Thumbnail style
+        thumbnail_style=getattr(job, "thumbnail_style", None),
         # Phase 3E.1: Template support
         template_id=getattr(job, "template_id", "minimal_dark"),
         # Phase 3E.2: Aspect ratio support
