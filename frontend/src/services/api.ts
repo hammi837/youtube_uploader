@@ -264,6 +264,11 @@ export async function listMusicStyles(): Promise<string[]> {
   return handleResponse<string[]>(res);
 }
 
+export async function listThumbnailStyles(): Promise<string[]> {
+  const res = await fetch(`${BASE_URL}/api/queue/thumbnail-styles`);
+  return handleResponse<string[]>(res);
+}
+
 export async function createQueueJobs(data: BulkQueueRequest): Promise<BulkQueueResponse> {
   const res = await fetch(`${BASE_URL}/api/queue`, {
     method: 'POST',
