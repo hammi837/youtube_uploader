@@ -11,9 +11,11 @@ import {
   getQueueStats,
   getQueueStatus,
   listAspectRatios,
+  listMusicStyles,
   listQueueJobs,
   listPlaylists,
   listTemplates,
+  listThumbnailStyles,
   pauseQueue,
   refreshPlaylists,
   resumeQueue,
@@ -164,6 +166,9 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   const [ttsVoices, setTTSVoices] = useState<{name: string}[]>([]);
   const [selectedMusicStyle, setSelectedMusicStyle] = useState('');
   const [musicStyles, setMusicStyles] = useState<string[]>([]);
+  // Phase 3J: Thumbnail style
+  const [selectedThumbnailStyle, setSelectedThumbnailStyle] = useState('');
+  const [thumbnailStyles, setThumbnailStyles] = useState<string[]>([]);
   
   const [submitting, setSubmitting] = useState(false);
   const [error, setError]           = useState('');
@@ -202,6 +207,7 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
   useEffect(() => {
     loadTTSVoices();
     loadMusicStyles();
+    loadThumbnailStyles();
   }, []);
 
   async function loadTTSVoices() {
@@ -220,6 +226,13 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
       const data = await listMusicStyles();
       setMusicStyles(data);
     } catch (err) { console.error('Failed to load music styles:', err); }
+  }
+
+  async function loadThumbnailStyles() {
+    try {
+      const data = await listThumbnailStyles();
+      setThumbnailStyles(data);
+    } catch (err) { console.error('Failed to load thumbnail styles:', err); }
   }
 
   async function loadPlaylists() {
@@ -279,6 +292,7 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
         background_type: selectedBackground !== 'gradient' ? selectedBackground : undefined,  // Phase 3E.3
         tts_voice: selectedTTSVoice || undefined,        // Phase 3I
         music_style: selectedMusicStyle || undefined,    // Phase 3I
+        thumbnail_style: selectedThumbnailStyle || undefined,  // Phase 3J
       });
       onSubmitted();
     } catch (err) {
@@ -392,6 +406,21 @@ function BulkTopicForm({ onSubmitted }: { onSubmitted: () => void }) {
             <option value="">(Default: Flat Mix from Root)</option>
             {musicStyles.map(s => (
               <option key={s} value={s}>{s} (Ducked)</option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Phase 3J: Thumbnail Style */}
+      <div className="queue-form__row">
+        <div className="form-group">
+          <label className="form-label">🖼️ Thumbnail Style</label>
+          <select className="form-select" value={selectedThumbnailStyle}
+            onChange={e => setSelectedThumbnailStyle(e.target.value)}
+            disabled={submitting}>
+            <option value="">(Default: Text Only)</option>
+            {thumbnailStyles.map(s => (
+              <option key={s} value={s}>{s}</option>
             ))}
           </select>
         </div>
@@ -824,6 +853,7 @@ function QueueJobCard({
         <span>{job.aspect_ratio === '9:16' ? '📱 Shorts' : '📺 16:9'}</span>
         {job.tts_voice && <span>🎙️ {job.tts_voice.replace('en-US-','').replace('Neural','')}</span>}
         {job.music_style && <span>🎵 {job.music_style}</span>}
+        {job.thumbnail_style && <span>🖼️ {job.thumbnail_style}</span>}
         {job.retry_count > 0 && (
           <span style={{color:'var(--color-warning)'}}>
             Retry {job.retry_count}/{job.max_retries}
