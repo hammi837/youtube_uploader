@@ -48,6 +48,21 @@ async def lifespan(app: FastAPI):
     # Phase 3I: add audio profile columns to existing DBs
     from backend.migrations.phase_3i import run as _phase_3i_migrate
     _phase_3i_migrate(engine)
+    # Phase 3J: add thumbnail_style column to existing DBs
+    from backend.migrations.phase_3j import run as _phase_3j_migrate
+    _phase_3j_migrate(engine)
+    # Phase 3J: validate THUMBNAIL_DEFAULT_STYLE configuration
+    thumbnail_default_style = os.getenv("THUMBNAIL_DEFAULT_STYLE", "text_only").strip()
+    allowed_styles = {"text_only", "scene_frame", "scene_frame_overlay"}
+    if thumbnail_default_style and thumbnail_default_style not in allowed_styles:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(
+            "Invalid THUMBNAIL_DEFAULT_STYLE '%s'. Must be one of %s. Normalizing to 'text_only'.",
+            thumbnail_default_style, sorted(allowed_styles)
+        )
+        # Normalize to text_only - don't set the env var, just log and continue
+        # The code in thumbnail.py will handle missing/invalid values by defaulting to text_only
     # Phase 3A/3B: start the queue worker on backend startup
     # Controlled by QUEUE_AUTO_RUN env var (default: true)
     auto_run = os.getenv("QUEUE_AUTO_RUN", "true").strip().lower()
