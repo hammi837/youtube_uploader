@@ -154,6 +154,8 @@ def create_queue_jobs(
             # Phase 3I: Audio profiles
             tts_voice=body.tts_voice,
             music_style=body.music_style,
+            # Phase 3J: Thumbnail style
+            thumbnail_style=body.thumbnail_style,
         )
         db.add(job)
         jobs.append(job)
@@ -258,6 +260,14 @@ def get_music_styles():
     """Phase 3I: List available background music style categories."""
     from backend.services.video.media_utils import list_music_styles
     return list_music_styles()
+
+
+# ── GET /api/queue/thumbnail-styles ───────────────────────────────────────────
+
+@router.get("/thumbnail-styles", response_model=list[str])
+def get_thumbnail_styles():
+    """Phase 3J: List available thumbnail styles."""
+    return ["text_only", "scene_frame", "scene_frame_overlay"]
 
 
 # ── GET /api/queue/{job_id} ───────────────────────────────────────────────────
