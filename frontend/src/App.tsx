@@ -6,10 +6,11 @@ import { VideoList } from './components/VideoList';
 import { AIContentPage } from './components/AIContentPage';
 import { VideoGenerationPage } from './components/VideoGenerationPage';
 import { QueuePage } from './components/QueuePage';
+import { AnalyticsPage } from './components/AnalyticsPage';
 import type { UploadJob } from './types/api';
 import './App.css';
 
-type View = 'upload' | 'progress' | 'history' | 'content' | 'video' | 'queue';
+type View = 'upload' | 'progress' | 'history' | 'content' | 'video' | 'queue' | 'analytics';
 
 export default function App() {
   const [view, setView]           = useState<View>('upload');
@@ -74,6 +75,12 @@ export default function App() {
         >
           📦 Queue
         </button>
+        <button
+          className={`nav-tab ${view === 'analytics' ? 'nav-tab--active' : ''}`}
+          onClick={() => setView('analytics')}
+        >
+          📊 Analytics
+        </button>
       </nav>
 
       {/* Main content */}
@@ -97,6 +104,8 @@ export default function App() {
         {view === 'video' && <VideoGenerationPage />}
 
         {view === 'queue' && <QueuePage />}
+
+        {view === 'analytics' && <AnalyticsPage />}
       </main>
 
       <footer className="app-footer">
