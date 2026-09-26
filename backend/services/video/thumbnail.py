@@ -193,8 +193,12 @@ def _get_ffmpeg_path() -> str:
 def _get_video_duration(video_path: Path) -> float:
     """Get video duration in seconds using ffprobe."""
     try:
-        ffmpeg_path = _get_ffmpeg_path()
-        ffprobe_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
+        from backend.services.media.ffmpeg import get_ffprobe_path, FFmpegNotFoundError
+        ffprobe_path = get_ffprobe_path()
+        if not Path(ffprobe_path).exists():
+            raise FFmpegNotFoundError(
+                f"FFprobe not found at: {ffprobe_path}. Set FFPROBE_PATH in backend/.env."
+            )
         result = subprocess.run(
             [ffprobe_path, "-v", "quiet", "-print_format", "json",
              "-show_streams", str(video_path)],
