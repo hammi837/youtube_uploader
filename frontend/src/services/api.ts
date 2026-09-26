@@ -1,4 +1,9 @@
 import type {
+  AnalyticsJobsResponse,
+  AnalyticsSummary,
+  ErrorAggregation,
+  PerformanceMetrics,
+  ResourceUsage,
   AudioRecord,
   AspectRatio,
   AuthStatus,
@@ -412,4 +417,44 @@ export async function listAspectRatios(): Promise<AspectRatio[]> {
 export async function getAspectRatio(aspectRatio: string): Promise<AspectRatio> {
   const res = await fetch(`${BASE_URL}/api/aspect-ratios/${aspectRatio}`);
   return handleResponse<AspectRatio>(res);
+}
+
+// ── Phase 3K: Analytics ───────────────────────────────────────────────────────────
+
+export async function getAnalyticsSummary(days: '7' | '30' | 'all' = '7'): Promise<AnalyticsSummary> {
+  const res = await fetch(`${BASE_URL}/api/analytics/summary?days=${days}`);
+  return handleResponse<AnalyticsSummary>(res);
+}
+
+export async function getAnalyticsPerformance(days: '7' | '30' | 'all' = '7'): Promise<PerformanceMetrics> {
+  const res = await fetch(`${BASE_URL}/api/analytics/performance?days=${days}`);
+  return handleResponse<PerformanceMetrics>(res);
+}
+
+export async function getAnalyticsErrors(days: '7' | '30' | 'all' = '7'): Promise<ErrorAggregation> {
+  const res = await fetch(`${BASE_URL}/api/analytics/errors?days=${days}`);
+  return handleResponse<ErrorAggregation>(res);
+}
+
+export async function getAnalyticsResources(): Promise<ResourceUsage> {
+  const res = await fetch(`${BASE_URL}/api/analytics/resources`);
+  return handleResponse<ResourceUsage>(res);
+}
+
+export async function getAnalyticsJobs(
+  days: '7' | '30' | 'all' = '7',
+  status?: string,
+  language?: string,
+  page = 1,
+  pageSize = 50,
+): Promise<AnalyticsJobsResponse> {
+  const params = new URLSearchParams({
+    days,
+    page: page.toString(),
+    page_size: pageSize.toString(),
+  });
+  if (status) params.set('status', status);
+  if (language) params.set('language', language);
+  const res = await fetch(`${BASE_URL}/api/analytics/jobs?${params.toString()}`);
+  return handleResponse<AnalyticsJobsResponse>(res);
 }
