@@ -466,3 +466,78 @@ export interface JobLogEntry {
   message: string;
   created_at: string;
 }
+
+// ── Phase 3K: Analytics ─────────────────────────────────────────────────────────────
+
+export interface AnalyticsSummary {
+  date_range: string;
+  total_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+  success_rate: number;
+  avg_total_duration_seconds: number | null;
+  uploads_today: number;
+  current_disk_usage_gb: number;
+  data_availability_note: string;
+}
+
+export interface PerformanceMetrics {
+  date_range: string;
+  jobs_completed: number;
+  jobs_with_retries: number;
+  retry_rate: number;
+  avg_total_duration_seconds: number | null;
+  p50_duration_seconds: number | null;
+  p90_duration_seconds: number | null;
+  p95_duration_seconds: number | null;
+  data_availability_note: string;
+}
+
+export interface ErrorAggregation {
+  date_range: string;
+  total_errors: number;
+  transient_errors: number;
+  permanent_errors: number;
+  unknown_errors: number;
+  error_by_type: Array<{ type: string; count: number }>;
+  error_by_stage: Array<{ stage: string; count: number }>;
+  top_error_messages: string[];
+  data_availability_note: string;
+}
+
+export interface ResourceUsage {
+  disk_usage_gb: number;
+  free_disk_gb: number;
+  temp_size_gb: number;
+  audio_size_gb: number;
+  video_size_gb: number;
+  ai_images_size_gb: number;
+  note: string;
+}
+
+export interface AnalyticsJob {
+  id: string;
+  topic: string;
+  language: string;
+  tone: string;
+  status: string;
+  production_stage: string | null;
+  progress: number;
+  retry_count: number;
+  started_at: string | null;
+  completed_at: string | null;
+  failed_at: string | null;
+  last_error_type: string | null;
+  error_message: string | null;
+  created_at: string;
+  data_availability_note: string;
+}
+
+export interface AnalyticsJobsResponse {
+  date_range: string;
+  total_count: number;
+  page: number;
+  page_size: number;
+  jobs: AnalyticsJob[];
+  data_availability_note: string;
+}
