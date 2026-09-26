@@ -11,7 +11,6 @@ import {
   getQueueStats,
   getQueueStatus,
   listAspectRatios,
-  listMusicStyles,
   listQueueJobs,
   listPlaylists,
   listTemplates,
