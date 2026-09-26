@@ -19,7 +19,7 @@ from backend.services.video.thumbnail import (
     _get_video_duration,
     generate_thumbnail,
 )
-from backend.services.video.pipeline import run_pipeline
+from backend.services.media.ffmpeg import get_ffprobe_path, get_ffmpeg_path
 from backend.queue_models import BulkQueueRequest
 
 
@@ -565,6 +565,35 @@ def test_video_generation_router_missing_phase_3j_parameter():
     # Verify the parameter has a default value of None
     param = sig.parameters['thumbnail_style']
     assert param.default is None, "thumbnail_style parameter must default to None"
+
+
+def test_ffprobe_path_resolution():
+    """Test that ffprobe path is correctly resolved using get_ffprobe_path.
+    
+    This is a regression test for the issue where _get_video_duration used
+    string replacement to derive ffprobe path, which incorrectly changed
+    ffmpeg\bin\ffmpeg.exe to ffprobe\bin\ffprobe.exe instead of
+    ffmpeg\bin\ffprobe.exe.
+    """
+    from backend.services.media.ffmpeg import get_ffprobe_path, get_ffmpeg_path
+    from pathlib import Path
+    
+    ffmpeg_path = get_ffmpeg_path()
+    ffprobe_path = get_ffprobe_path()
+    
+    # Both paths should exist
+    assert Path(ffmpeg_path).exists(), f"FFmpeg not found at {ffmpeg_path}"
+    assert Path(ffprobe_path).exists(), f"FFprobe not found at {ffprobe_path}"
+    
+    # Both should be in the same directory
+    ffmpeg_dir = Path(ffmpeg_path).parent
+    ffprobe_dir = Path(ffprobe_path).parent
+    assert ffmpeg_dir == ffprobe_dir, "FFmpeg and FFprobe should be in the same directory"
+    
+    # Verify string replacement would fail (this was the bug)
+    bad_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
+    assert bad_path != ffprobe_path, "String replacement method is incorrect"
+    assert not Path(bad_path).exists(), "Incorrectly constructed path should not exist"
 
 
 if __name__ == "__main__":

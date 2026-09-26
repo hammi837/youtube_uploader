@@ -112,12 +112,28 @@ def test_scene_frame_16_9():
     """Test 1: scene_frame with 16:9 video."""
     print_section("TEST 1: scene_frame (16:9 video)")
     
-    video_path = Path("G:/youtube-uploader/assets/backgrounds/videos/15406860_1920_1080_25fps.mp4")
+    # Use an already generated video from temp directory
+    video_path = Path("G:/youtube-uploader/data/temp/03a4d086-e5ec-4679-b6f5-0a5ade876f8e/with_audio.mp4")
     output_path = Path("G:/youtube-uploader/data/temp/test_scene_frame_16_9.jpg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
     print(f"Input video: {video_path}")
+    print(f"Video exists: {video_path.exists()}")
+    print(f"Video size: {video_path.stat().st_size if video_path.exists() else 0} bytes")
     print(f"Output thumbnail: {output_path}")
+    
+    # Test frame extraction directly
+    from backend.services.video.thumbnail import _extract_frame
+    temp_frame = Path("G:/youtube-uploader/data/temp/debug_frame.jpg")
+    extract_result = _extract_frame(video_path, 20.0, temp_frame)
+    print(f"Direct frame extraction result: {extract_result}")
+    print(f"Temp frame exists: {temp_frame.exists()}")
+    if temp_frame.exists():
+        print(f"Temp frame size: {temp_frame.stat().st_size} bytes")
+        from PIL import Image
+        img = Image.open(temp_frame)
+        print(f"Temp frame dimensions: {img.size}")
+        img.close()
     
     try:
         thumb_result, fallback_actions = generate_thumbnail_from_frame(
@@ -130,6 +146,7 @@ def test_scene_frame_16_9():
         
         print(f"Thumbnail generation completed")
         print(f"Fallback actions: {fallback_actions}")
+        print(f"Thumbnail result: {thumb_result}")
         
         if verify_thumbnail_file(output_path, "TEST 1"):
             manual_visual_inspection(
@@ -150,7 +167,8 @@ def test_scene_frame_overlay_16_9():
     """Test 2: scene_frame_overlay with 16:9 video."""
     print_section("TEST 2: scene_frame_overlay (16:9 video)")
     
-    video_path = Path("G:/youtube-uploader/assets/backgrounds/videos/15406860_1920_1080_25fps.mp4")
+    # Use an already generated video from temp directory
+    video_path = Path("G:/youtube-uploader/data/temp/03a4d086-e5ec-4679-b6f5-0a5ade876f8e/with_audio.mp4")
     output_path = Path("G:/youtube-uploader/data/temp/test_scene_frame_overlay_16_9.jpg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -188,7 +206,8 @@ def test_null_default():
     """Test 3: NULL/default (resolves to text_only)."""
     print_section("TEST 3: NULL/default (text_only)")
     
-    video_path = Path("G:/youtube-uploader/assets/backgrounds/videos/15406860_1920_1080_25fps.mp4")
+    # Use an already generated video from temp directory
+    video_path = Path("G:/youtube-uploader/data/temp/03a4d086-e5ec-4679-b6f5-0a5ade876f8e/with_audio.mp4")
     output_path = Path("G:/youtube-uploader/data/temp/test_null_default.jpg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
@@ -227,7 +246,8 @@ def test_explicit_text_only():
     """Test 4: explicit text_only."""
     print_section("TEST 4: explicit text_only")
     
-    video_path = Path("G:/youtube-uploader/assets/backgrounds/videos/15406860_1920_1080_25fps.mp4")
+    # Use an already generated video from temp directory
+    video_path = Path("G:/youtube-uploader/data/temp/03a4d086-e5ec-4679-b6f5-0a5ade876f8e/with_audio.mp4")
     output_path = Path("G:/youtube-uploader/data/temp/test_explicit_text_only.jpg")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     
