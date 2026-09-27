@@ -35,21 +35,48 @@ function fmtPct(pct: number): string {
 
 function exportToCSV(data: any[], filename: string) {
   if (data.length === 0) return;
-  const headers = Object.keys(data[0]);
+
+  // Flatten nested objects and arrays for CSV export
+  const flattenObject = (obj: any, prefix = ''): any => {
+    const result: any = {};
+    for (const key in obj) {
+      if (obj.hasOwnProperty(key)) {
+        const value = obj[key];
+        const newKey = prefix ? `${prefix}_${key}` : key;
+
+        if (value === null || value === undefined) {
+          result[newKey] = '';
+        } else if (typeof value === 'object' && !Array.isArray(value)) {
+          Object.assign(result, flattenObject(value, newKey));
+        } else if (Array.isArray(value)) {
+          // Convert arrays to JSON string for CSV
+          result[newKey] = JSON.stringify(value);
+        } else {
+          result[newKey] = value;
+        }
+      }
+    }
+    return result;
+  };
+
+  const flattenedData = data.map((item) => flattenObject(item));
+  const headers = Object.keys(flattenedData[0]);
+
   const csv = [
     headers.join(','),
-    ...data.map((row) =>
+    ...flattenedData.map((row) =>
       headers
         .map((header) => {
           const val = row[header];
-          if (val === null || val === undefined) return '';
+          if (val === null || val === undefined || val === '') return '';
           if (typeof val === 'string') return `"${val.replace(/"/g, '""')}"`;
           return String(val);
         })
         .join(',')
     ),
   ].join('\n');
-  const blob = new Blob([csv], { type: 'text/csv' });
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
