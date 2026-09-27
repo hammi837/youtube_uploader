@@ -398,7 +398,7 @@ def compute_current_resource_usage() -> ResourceUsage:
         temp_size_gb = _directory_size_gb(data_dir / "temp")
         audio_size_gb = _directory_size_gb(data_dir / "audio")
         video_size_gb = _directory_size_gb(data_dir / "videos")
-        ai_images_size_gb = _directory_size_gb(data_dir / "ai_images")
+        ai_images_size_gb = _directory_size_gb(data_dir / "generated_images")
 
         # Calculate total usage as free + used (approximation)
         total_gb = disk_free_gb + temp_size_gb + audio_size_gb + video_size_gb + ai_images_size_gb
