@@ -10,10 +10,20 @@ import type {
   BulkQueueRequest,
   BulkQueueResponse,
   CleanupResult,
+  ContentPlan,
+  ContentPlanCreate,
+  ContentPlanUpdate,
   ContentProjectDetail,
   ContentProjectSummary,
   HealthResponse,
   JobLogEntry,
+  PlanApproveRequest,
+  PlanApproveResponse,
+  PlanCompletionResponse,
+  PlanGenerateResponse,
+  PlanItem,
+  PlanItemCreate,
+  PlanItemUpdate,
   QueueHealth,
   QueueJob,
   QueueStats,
@@ -457,4 +467,99 @@ export async function getAnalyticsJobs(
   if (language) params.set('language', language);
   const res = await fetch(`${BASE_URL}/api/analytics/jobs?${params.toString()}`);
   return handleResponse<AnalyticsJobsResponse>(res);
+}
+
+// ── Phase 3L: Content Planning ───────────────────────────────────────────────────
+
+export async function createPlan(data: ContentPlanCreate): Promise<ContentPlan> {
+  const res = await fetch(`${BASE_URL}/api/plans`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<ContentPlan>(res);
+}
+
+export async function listPlans(): Promise<ContentPlan[]> {
+  const res = await fetch(`${BASE_URL}/api/plans`);
+  return handleResponse<ContentPlan[]>(res);
+}
+
+export async function getPlan(planId: string): Promise<ContentPlan> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}`);
+  return handleResponse<ContentPlan>(res);
+}
+
+export async function updatePlan(planId: string, data: Partial<ContentPlanUpdate>): Promise<ContentPlan> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<ContentPlan>(res);
+}
+
+export async function deletePlan(planId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}`, {
+    method: 'DELETE',
+  });
+  return handleResponse<void>(res);
+}
+
+export async function addPlanItem(planId: string, data: PlanItemCreate): Promise<PlanItem> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<PlanItem>(res);
+}
+
+export async function listPlanItems(planId: string): Promise<PlanItem[]> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/items`);
+  return handleResponse<PlanItem[]>(res);
+}
+
+export async function updatePlanItem(planId: string, itemId: string, data: Partial<PlanItemUpdate>): Promise<PlanItem> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/items/${itemId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<PlanItem>(res);
+}
+
+export async function removePlanItem(planId: string, itemId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/items/${itemId}`, {
+    method: 'DELETE',
+  });
+  return handleResponse<void>(res);
+}
+
+export async function generatePlanScripts(planId: string): Promise<PlanGenerateResponse> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/generate`, {
+    method: 'POST',
+  });
+  return handleResponse<PlanGenerateResponse>(res);
+}
+
+export async function approvePlan(planId: string, data: PlanApproveRequest): Promise<PlanApproveResponse> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return handleResponse<PlanApproveResponse>(res);
+}
+
+export async function rejectPlan(planId: string): Promise<{ plan_id: string; status: string }> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/reject`, {
+    method: 'POST',
+  });
+  return handleResponse<{ plan_id: string; status: string }>(res);
+}
+
+export async function checkPlanCompletion(planId: string): Promise<PlanCompletionResponse> {
+  const res = await fetch(`${BASE_URL}/api/plans/${planId}/completion`);
+  return handleResponse<PlanCompletionResponse>(res);
 }
