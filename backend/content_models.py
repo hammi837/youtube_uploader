@@ -24,13 +24,14 @@ from backend.db import Base
 # ── Content project statuses ──────────────────────────────────────────────────
 
 class ContentStatus:
+    PLANNED    = "planned"     # Phase 3L: Planned but not yet queued
     PENDING    = "pending"
     RESEARCHING = "researching"
     GENERATING  = "generating"
     COMPLETED   = "completed"
     FAILED      = "failed"
 
-    ALL = {PENDING, RESEARCHING, GENERATING, COMPLETED, FAILED}
+    ALL = {PLANNED, PENDING, RESEARCHING, GENERATING, COMPLETED, FAILED}
 
 
 # ── SQLAlchemy models ─────────────────────────────────────────────────────────
@@ -63,6 +64,13 @@ class ContentProject(Base):
         server_default=func.now(), onupdate=func.now(), default=func.now(),
     )
 
+    # Phase 3L: Optional link to a content plan
+    plan_id: Mapped[Optional[str]] = mapped_column(
+        String(36),
+        ForeignKey("content_plans.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     # Relationships
     sources: Mapped[list["ResearchSourceRecord"]] = relationship(
         "ResearchSourceRecord", back_populates="project", cascade="all, delete-orphan",
@@ -73,6 +81,9 @@ class ContentProject(Base):
     )
     audio_records: Mapped[list["backend.tts_models.GeneratedAudio"]] = relationship(  # type: ignore[name-defined]
         "GeneratedAudio", back_populates="project", cascade="all, delete-orphan",
+    )
+    plan: Mapped[Optional["backend.plan_models.ContentPlan"]] = relationship(  # type: ignore[name-defined]
+        "ContentPlan", back_populates="projects",
     )
 
 
