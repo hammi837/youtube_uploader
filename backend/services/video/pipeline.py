@@ -92,6 +92,7 @@ async def run_pipeline(
         tts_voice,
         music_style,
         music_ducking_enabled,
+        thumbnail_style,  # Phase 3J
         progress_callback,
         template_id,  # Phase 3E.1
         aspect_ratio,  # Phase 3E.2
@@ -112,6 +113,7 @@ def _run_pipeline_sync(
     tts_voice: str | None = None,
     music_style: str | None = None,
     music_ducking_enabled: bool = True,
+    thumbnail_style: str | None = None,  # Phase 3J
     progress_callback: Callable[[int, str], None] = lambda p, s: None,
     template_id: str = "minimal_dark",  # Phase 3E.1
     aspect_ratio: str = "16:9",  # Phase 3E.2
