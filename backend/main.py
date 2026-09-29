@@ -34,11 +34,13 @@ from backend.routers import templates  # Phase 3E.1: Video templates
 from backend.routers import aspect_ratios  # Phase 3E.2: Aspect ratios
 from backend.routers import backgrounds  # Phase 3E.3: Background visuals
 from backend.routers import analytics  # Phase 3K: Analytics
+from backend.routers import plans  # Phase 3L: Content planning
 # Import models so SQLAlchemy registers all tables under Base.metadata
 import backend.content_models  # noqa: F401
 import backend.tts_models       # noqa: F401
 import backend.video_generation_models  # noqa: F401
 import backend.queue_models     # noqa: F401
+import backend.plan_models      # noqa: F401  # Phase 3L
 
 
 # ── Lifespan: create DB tables on startup ─────────────────────────────────────
@@ -52,6 +54,9 @@ async def lifespan(app: FastAPI):
     # Phase 3J: add thumbnail_style column to existing DBs
     from backend.migrations.phase_3j import run as _phase_3j_migrate
     _phase_3j_migrate(engine)
+    # Phase 3L: add content planning tables and columns
+    from backend.migrations.phase_3l import run as _phase_3l_migrate
+    _phase_3l_migrate(engine)
     # Phase 3J: validate THUMBNAIL_DEFAULT_STYLE configuration
     thumbnail_default_style = os.getenv("THUMBNAIL_DEFAULT_STYLE", "text_only").strip()
     allowed_styles = {"text_only", "scene_frame", "scene_frame_overlay"}
@@ -107,6 +112,7 @@ app.include_router(templates.router)        # Phase 3E.1
 app.include_router(aspect_ratios.router)    # Phase 3E.2
 app.include_router(backgrounds.router)      # Phase 3E.3
 app.include_router(analytics.router)        # Phase 3K
+app.include_router(plans.router)            # Phase 3L
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
