@@ -541,3 +541,96 @@ export interface AnalyticsJobsResponse {
   jobs: AnalyticsJob[];
   data_availability_note: string;
 }
+
+// ── Phase 3L: Content Planning ─────────────────────────────────────────────────────
+
+export type PlanStatus = 'draft' | 'approved' | 'completed' | 'rejected';
+
+export interface ContentPlan {
+  id: string;
+  name: string;
+  description: string | null;
+  status: PlanStatus;
+  schedule_start: string | null;
+  schedule_interval_minutes: number | null;
+  schedule_timezone: string | null;
+  created_at: string;
+  updated_at: string;
+  item_count: number;
+}
+
+export interface ContentPlanCreate {
+  name: string;
+  description?: string;
+  schedule_start?: string;
+  schedule_interval_minutes?: number;
+  schedule_timezone?: string;
+}
+
+export interface ContentPlanUpdate {
+  name?: string;
+  description?: string;
+  status?: PlanStatus;
+  schedule_start?: string;
+  schedule_interval_minutes?: number;
+  schedule_timezone?: string;
+}
+
+export interface PlanItem {
+  id: string;
+  plan_id: string | null;
+  topic: string;
+  language: string;
+  tone: string;
+  target_duration_seconds: number;
+  scene_count: number;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  has_script: boolean;
+  script_title: string | null;
+}
+
+export interface PlanItemCreate {
+  topic: string;
+  language?: string;
+  tone?: string;
+  target_duration_seconds?: number;
+  scene_count?: number;
+}
+
+export interface PlanItemUpdate {
+  topic?: string;
+  language?: string;
+  tone?: string;
+  target_duration_seconds?: number;
+  scene_count?: number;
+}
+
+export interface PlanGenerateResponse {
+  total: number;
+  succeeded: number;
+  failed: number;
+  errors: string[];
+}
+
+export interface PlanApproveRequest {
+  schedule_start?: string;
+  schedule_interval_minutes?: number;
+  schedule_timezone?: string;
+}
+
+export interface PlanApproveResponse {
+  plan_id: string;
+  queued_count: number;
+  skipped_count: number;
+  schedule_summary: string[];
+}
+
+export interface PlanCompletionResponse {
+  complete: boolean;
+  total_jobs: number;
+  completed_jobs: number;
+  failed_jobs: number;
+}
