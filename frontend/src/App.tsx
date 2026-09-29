@@ -7,10 +7,11 @@ import { AIContentPage } from './components/AIContentPage';
 import { VideoGenerationPage } from './components/VideoGenerationPage';
 import { QueuePage } from './components/QueuePage';
 import { AnalyticsPage } from './components/AnalyticsPage';
+import { PlannerPage } from './components/PlannerPage';
 import type { UploadJob } from './types/api';
 import './App.css';
 
-type View = 'upload' | 'progress' | 'history' | 'content' | 'video' | 'queue' | 'analytics';
+type View = 'upload' | 'progress' | 'history' | 'content' | 'video' | 'queue' | 'analytics' | 'planner';
 
 export default function App() {
   const [view, setView]           = useState<View>('upload');
@@ -76,6 +77,12 @@ export default function App() {
           📦 Queue
         </button>
         <button
+          className={`nav-tab ${view === 'planner' ? 'nav-tab--active' : ''}`}
+          onClick={() => setView('planner')}
+        >
+          📅 Planner
+        </button>
+        <button
           className={`nav-tab ${view === 'analytics' ? 'nav-tab--active' : ''}`}
           onClick={() => setView('analytics')}
         >
@@ -104,6 +111,8 @@ export default function App() {
         {view === 'video' && <VideoGenerationPage />}
 
         {view === 'queue' && <QueuePage />}
+
+        {view === 'planner' && <PlannerPage />}
 
         {view === 'analytics' && <AnalyticsPage />}
       </main>
