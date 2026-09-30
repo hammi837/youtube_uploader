@@ -220,10 +220,12 @@ class TestCreateQueueJobs:
 
     # G. Scheduled jobs get correct publish times
     def test_scheduled_jobs_publish_times(self, client):
+        import uuid
         start = _now_plus(30)  # 30 minutes from now
+        unique_suffix = str(uuid.uuid4())[:8]
         with self._patch_worker():
             r = client.post("/api/queue", json={
-                "topics": ["topic 1", "topic 2"],
+                "topics": [f"scheduled topic 1 {unique_suffix}", f"scheduled topic 2 {unique_suffix}"],
                 "schedule_start": start,
                 "schedule_interval_minutes": 60,
             })

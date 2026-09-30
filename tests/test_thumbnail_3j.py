@@ -21,6 +21,7 @@ from backend.services.video.thumbnail import (
 )
 from backend.services.media.ffmpeg import get_ffprobe_path, get_ffmpeg_path
 from backend.queue_models import BulkQueueRequest
+from backend.services.video.pipeline import run_pipeline, _run_pipeline_sync
 
 
 # ── Test Fixtures ─────────────────────────────────────────────────────────────
@@ -594,6 +595,103 @@ def test_ffprobe_path_resolution():
     bad_path = ffmpeg_path.replace("ffmpeg", "ffprobe")
     assert bad_path != ffprobe_path, "String replacement method is incorrect"
     assert not Path(bad_path).exists(), "Incorrectly constructed path should not exist"
+
+
+# ── Regression Test: thumbnail_style Parameter Propagation ─────────────────────
+
+def test_thumbnail_style_parameter_propagation_to_pipeline():
+    """Test that thumbnail_style is correctly propagated from queue processor to pipeline."""
+    from unittest.mock import patch
+    import asyncio
+
+    # Mock the _run_pipeline_sync to capture the thumbnail_style parameter
+    captured_thumbnail_style = None
+
+    def mock_run_pipeline_sync(*args, **kwargs):
+        nonlocal captured_thumbnail_style
+        # thumbnail_style is passed as positional arg (12th arg, index 11)
+        # or available as keyword arg
+        if len(args) > 11:
+            captured_thumbnail_style = args[11]
+        else:
+            captured_thumbnail_style = kwargs.get('thumbnail_style')
+        return {
+            "output_path": "/fake/path.mp4",
+            "thumbnail_path": "/fake/path.jpg",
+            "caption_path": "/fake/path.srt",
+            "duration_seconds": 60.0,
+            "file_size_bytes": 1000000,
+            "elapsed_seconds": 10.0,
+        }
+
+    with patch('backend.services.video.pipeline._run_pipeline_sync', side_effect=mock_run_pipeline_sync):
+        # Test with thumbnail_style=None (old behavior)
+        result = asyncio.run(run_pipeline(
+            job_id="test-job-1",
+            content_project_id="test-project-1",
+            audio_id="test-audio-1",
+            width=1920,
+            height=1080,
+            fps=30,
+            captions_enabled=True,
+            music_enabled=True,
+            tts_voice=None,
+            music_style=None,
+            music_ducking_enabled=True,
+            thumbnail_style=None,
+        ))
+        assert captured_thumbnail_style is None
+        assert result["output_path"] == "/fake/path.mp4"
+
+    with patch('backend.services.video.pipeline._run_pipeline_sync', side_effect=mock_run_pipeline_sync):
+        # Test with thumbnail_style="text_only"
+        result = asyncio.run(run_pipeline(
+            job_id="test-job-2",
+            content_project_id="test-project-2",
+            audio_id="test-audio-2",
+            width=1920,
+            height=1080,
+            fps=30,
+            captions_enabled=True,
+            music_enabled=True,
+            tts_voice=None,
+            music_style=None,
+            music_ducking_enabled=True,
+            thumbnail_style="text_only",
+        ))
+        assert captured_thumbnail_style == "text_only"
+        assert result["output_path"] == "/fake/path.mp4"
+
+    with patch('backend.services.video.pipeline._run_pipeline_sync', side_effect=mock_run_pipeline_sync):
+        # Test with thumbnail_style="scene_frame"
+        result = asyncio.run(run_pipeline(
+            job_id="test-job-3",
+            content_project_id="test-project-3",
+            audio_id="test-audio-3",
+            width=1920,
+            height=1080,
+            fps=30,
+            captions_enabled=True,
+            music_enabled=True,
+            tts_voice=None,
+            music_style=None,
+            music_ducking_enabled=True,
+            thumbnail_style="scene_frame",
+        ))
+        assert captured_thumbnail_style == "scene_frame"
+        assert result["output_path"] == "/fake/path.mp4"
+
+
+def test_pipeline_sync_accepts_thumbnail_style():
+    """Test that _run_pipeline_sync function signature accepts thumbnail_style parameter."""
+    import inspect
+    sig = inspect.signature(_run_pipeline_sync)
+    params = list(sig.parameters.keys())
+    assert 'thumbnail_style' in params
+    # Verify it's positioned correctly (after music_ducking_enabled)
+    music_ducking_idx = params.index('music_ducking_enabled')
+    thumbnail_style_idx = params.index('thumbnail_style')
+    assert thumbnail_style_idx == music_ducking_idx + 1
 
 
 if __name__ == "__main__":

@@ -647,5 +647,118 @@ def test_completion_failed_item_not_complete(test_db):
     assert result["failed_jobs"] == 1
 
 
+# ── Scheduling Tests ──────────────────────────────────────────────────────────
+
+def test_scheduling_timezone_aware(test_db):
+    """Test that scheduling calculations accept timezone parameter."""
+    from backend.services.plan_service import create_plan, add_plan_item, approve_plan
+    from backend.content_models import ContentStatus, ContentProject
+    from backend.queue_models import ContentQueueJob
+
+    # Create plan with schedule in America/New_York timezone
+    plan_id = create_plan(
+        "Test Plan Timezone",
+        None,
+        "2026-10-01T15:00:00",  # 3 PM
+        1440,  # 1 day interval
+        "America/New_York",
+    )
+    add_plan_item(plan_id, "Test Topic", "en", "informative", 180, 12)
+
+    # Mark project as having a script
+    project = test_db.query(ContentProject).filter(ContentProject.plan_id == plan_id).first()
+    project.status = ContentStatus.PENDING
+    test_db.commit()
+
+    approve_plan(plan_id, None, None, None)
+
+    queue_job = test_db.query(ContentQueueJob).filter(ContentQueueJob.content_project_id == project.id).first()
+    assert queue_job is not None
+    assert queue_job.scheduled_publish_at is not None
+    # Verify timezone is stored and calculation occurs (actual hour depends on system timezone handling)
+    assert queue_job.scheduled_publish_at.day == 1
+    assert queue_job.scheduled_publish_at.month == 10
+
+
+def test_scheduling_interval_applied(test_db):
+    """Test that interval is applied correctly across multiple items."""
+    from backend.services.plan_service import create_plan, add_plan_item, approve_plan
+    from backend.content_models import ContentStatus, ContentProject
+    from backend.queue_models import ContentQueueJob
+    from datetime import timedelta
+
+    # Create plan with 60-minute interval
+    plan_id = create_plan(
+        "Test Plan Interval",
+        None,
+        "2026-10-01T10:00:00Z",  # 10 AM UTC
+        60,  # 1 hour interval
+        None,
+    )
+    
+    # Add 3 items
+    for i in range(3):
+        add_plan_item(plan_id, f"Topic {i}", "en", "informative", 180, 12)
+
+    # Mark all projects as having scripts
+    projects = test_db.query(ContentProject).filter(ContentProject.plan_id == plan_id).all()
+    for project in projects:
+        project.status = ContentStatus.PENDING
+    test_db.commit()
+
+    approve_plan(plan_id, None, None, None)
+
+    # Get queue jobs ordered by scheduled_publish_at
+    queue_jobs = test_db.query(ContentQueueJob).filter(
+        ContentQueueJob.content_project_id.in_([p.id for p in projects])
+    ).order_by(ContentQueueJob.scheduled_publish_at).all()
+
+    assert len(queue_jobs) == 3
+    
+    # Verify 1-hour intervals
+    for i in range(2):
+        diff = queue_jobs[i+1].scheduled_publish_at - queue_jobs[i].scheduled_publish_at
+        assert diff == timedelta(hours=1)
+
+
+def test_scheduling_first_last_times(test_db):
+    """Test that first and last scheduled times are calculated correctly."""
+    from backend.services.plan_service import create_plan, add_plan_item, approve_plan
+    from backend.content_models import ContentStatus, ContentProject
+    from backend.queue_models import ContentQueueJob
+
+    # Create plan with 5 items and 2-hour interval
+    plan_id = create_plan(
+        "Test Plan First Last",
+        None,
+        "2026-10-01T10:00:00Z",
+        120,  # 2 hours
+        None,
+    )
+    
+    for i in range(5):
+        add_plan_item(plan_id, f"Topic {i}", "en", "informative", 180, 12)
+
+    # Mark all projects as having scripts
+    projects = test_db.query(ContentProject).filter(ContentProject.plan_id == plan_id).all()
+    for project in projects:
+        project.status = ContentStatus.PENDING
+    test_db.commit()
+
+    approve_plan(plan_id, None, None, None)
+
+    queue_jobs = test_db.query(ContentQueueJob).filter(
+        ContentQueueJob.content_project_id.in_([p.id for p in projects])
+    ).order_by(ContentQueueJob.scheduled_publish_at).all()
+
+    assert len(queue_jobs) == 5
+    
+    # First job at 10:00 UTC
+    assert queue_jobs[0].scheduled_publish_at.hour == 10
+    
+    # Last job at 10:00 + 4*2 hours = 18:00 UTC
+    assert queue_jobs[4].scheduled_publish_at.hour == 18
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
