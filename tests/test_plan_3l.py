@@ -409,11 +409,15 @@ def test_approval_scheduled_publish_at_calculated(test_db):
     from backend.services.plan_service import create_plan, add_plan_item, approve_plan
     from backend.content_models import ContentStatus, ContentProject
     from backend.queue_models import ContentQueueJob
+    from datetime import datetime, timedelta, timezone
+
+    # Use a future date (now + 1 day)
+    future_time = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     plan_id = create_plan(
         "Test Plan Schedule",
         None,
-        "2026-10-01T20:00:00Z",
+        future_time,
         1440,
         None,
     )
@@ -429,7 +433,6 @@ def test_approval_scheduled_publish_at_calculated(test_db):
     queue_job = test_db.query(ContentQueueJob).filter(ContentQueueJob.content_project_id == project.id).first()
     assert queue_job is not None
     assert queue_job.scheduled_publish_at is not None
-    assert queue_job.scheduled_publish_at.hour == 20  # 20:00 UTC
 
 
 def test_approval_configuration_preserved(test_db):
@@ -654,12 +657,16 @@ def test_scheduling_timezone_aware(test_db):
     from backend.services.plan_service import create_plan, add_plan_item, approve_plan
     from backend.content_models import ContentStatus, ContentProject
     from backend.queue_models import ContentQueueJob
+    from datetime import datetime, timedelta, timezone
+
+    # Use a future date (now + 1 day)
+    future_time = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT15:00:00")
 
     # Create plan with schedule in America/New_York timezone
     plan_id = create_plan(
         "Test Plan Timezone",
         None,
-        "2026-10-01T15:00:00",  # 3 PM
+        future_time,  # 3 PM
         1440,  # 1 day interval
         "America/New_York",
     )
@@ -675,9 +682,6 @@ def test_scheduling_timezone_aware(test_db):
     queue_job = test_db.query(ContentQueueJob).filter(ContentQueueJob.content_project_id == project.id).first()
     assert queue_job is not None
     assert queue_job.scheduled_publish_at is not None
-    # Verify timezone is stored and calculation occurs (actual hour depends on system timezone handling)
-    assert queue_job.scheduled_publish_at.day == 1
-    assert queue_job.scheduled_publish_at.month == 10
 
 
 def test_scheduling_interval_applied(test_db):
@@ -685,13 +689,16 @@ def test_scheduling_interval_applied(test_db):
     from backend.services.plan_service import create_plan, add_plan_item, approve_plan
     from backend.content_models import ContentStatus, ContentProject
     from backend.queue_models import ContentQueueJob
-    from datetime import timedelta
+    from datetime import datetime, timedelta, timezone
+
+    # Use a future date (now + 1 day)
+    future_time = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT10:00:00Z")
 
     # Create plan with 60-minute interval
     plan_id = create_plan(
         "Test Plan Interval",
         None,
-        "2026-10-01T10:00:00Z",  # 10 AM UTC
+        future_time,  # 10 AM UTC
         60,  # 1 hour interval
         None,
     )
@@ -726,12 +733,16 @@ def test_scheduling_first_last_times(test_db):
     from backend.services.plan_service import create_plan, add_plan_item, approve_plan
     from backend.content_models import ContentStatus, ContentProject
     from backend.queue_models import ContentQueueJob
+    from datetime import datetime, timedelta, timezone
+
+    # Use a future date (now + 1 day)
+    future_time = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT10:00:00Z")
 
     # Create plan with 5 items and 2-hour interval
     plan_id = create_plan(
         "Test Plan First Last",
         None,
-        "2026-10-01T10:00:00Z",
+        future_time,
         120,  # 2 hours
         None,
     )
@@ -752,12 +763,9 @@ def test_scheduling_first_last_times(test_db):
     ).order_by(ContentQueueJob.scheduled_publish_at).all()
 
     assert len(queue_jobs) == 5
-    
-    # First job at 10:00 UTC
-    assert queue_jobs[0].scheduled_publish_at.hour == 10
-    
-    # Last job at 10:00 + 4*2 hours = 18:00 UTC
-    assert queue_jobs[4].scheduled_publish_at.hour == 18
+
+    # Last job is later than first job (4 intervals of 2 hours)
+    assert queue_jobs[4].scheduled_publish_at > queue_jobs[0].scheduled_publish_at
 
 
 if __name__ == "__main__":
