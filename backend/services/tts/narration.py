@@ -74,11 +74,13 @@ def estimate_narration_duration(text: str) -> float:
     """
     Estimate spoken duration from word count.
 
-    Average spoken English rate: ~150 words/minute.
-    Returns duration in seconds.
+    Uses NARRATION_WPM when set (default 140). Returns duration in seconds.
     """
-    words = len(text.split())
-    return round(words / 150 * 60, 1)
+    from backend.services.script_length import count_words, get_narration_wpm
+
+    words = count_words(text)
+    wpm = get_narration_wpm()
+    return round(words / wpm * 60.0, 1)
 
 
 def count_narration_words(text: str) -> int:
