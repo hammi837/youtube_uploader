@@ -1,9 +1,21 @@
 # ── Google OAuth secrets — NEVER commit these ────────────────────────────────
 credentials.json
 token.json
+token.json.*
+token.json.invalid
+token.json.dead*
+*.dead_pre_*
+
+# Local OAuth backup folders (credentials + tokens)
+auth_backup*/
+**/auth_backup*/
 
 # ── Environment variables ─────────────────────────────────────────────────────
 .env
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.example
 backend/.env
 frontend/.env
 frontend/.env.local
@@ -81,6 +93,7 @@ desktop.ini
 .vscode/
 .idea/
 *.code-workspace
+.cursor/
 
 # ── Test artifacts ────────────────────────────────────────────────────────────
 .coverage
@@ -108,3 +121,27 @@ token.json.invalid
 # ── Dummy/test media files ────────────────────────────────────────────────────
 dummy.mp4
 assets
+
+# ── Local one-off verification / scratch scripts (do not push) ───────────────
+_p0_*.py
+_verify_*.py
+verify_p0_*.py
+verify_phase_*.py
+verify_queue_*.py
+verify_real_*.py
+check_active_jobs.py
+check_queue_order.py
+cleanup_*.py
+create_test_analytics_records.py
+prioritize_3l_jobs.py
+patch_tests*.py
+
+# ── Downloaded wheels / large local packages ─────────────────────────────────
+*.whl
+tools/wheels/
+
+# ── Pytest / local caches ────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
