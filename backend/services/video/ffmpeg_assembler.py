@@ -137,49 +137,66 @@ def calculate_scene_durations(
 ) -> list[float]:
     """
     Distribute total audio duration across scenes proportional to
-    each scene's narration character count, respecting explicit durations.
+    each scene's narration character count.
+
+    P0.3: Clip timings follow REAL narration audio. LLM/script
+    estimated_duration_seconds values are ignored for assembly so short
+    scripts cannot fake a longer timeline (and vice versa).
+    Optional explicit duration_seconds is still honored only when it is the
+    sole timing source AND all scenes provide it AND the sum already matches
+    the audio within 15%; otherwise fall back to narration-proportional timing.
     """
+    if not scenes:
+        return []
+
     if not math.isfinite(total_audio_duration) or total_audio_duration <= 0:
         total_audio_duration = max(len(scenes) * 3.0, 5.0)
 
-    durations = [0.0] * len(scenes)
-    unallocated_idx = []
-    unallocated_chars = 0
-    allocated_dur = 0.0
-
-    for i, scene in enumerate(scenes):
-        explicit_dur = scene.get("duration_seconds") or scene.get("estimated_duration_seconds")
-        if explicit_dur is not None:
-            try:
-                explicit_dur = float(explicit_dur)
-            except (ValueError, TypeError):
-                explicit_dur = None
-                
-        if explicit_dur is not None and math.isfinite(explicit_dur) and explicit_dur >= 1.0:
-            durations[i] = explicit_dur
-            allocated_dur += explicit_dur
-        else:
-            unallocated_idx.append(i)
-            narration = scene.get("narration", "") or ""
-            unallocated_chars += max(len(narration), 1)
-
-    # Distribute remaining duration to unallocated
-    remaining_dur = max(0.0, total_audio_duration - allocated_dur)
-    
-    for i in unallocated_idx:
-        scene = scenes[i]
+    # Prefer pure narration-proportional allocation (matches spoken audio).
+    char_weights: list[int] = []
+    for scene in scenes:
         narration = scene.get("narration", "") or ""
-        chars = max(len(narration), 1)
-        if unallocated_chars > 0:
-            dur = (chars / unallocated_chars) * remaining_dur
-        else:
-            dur = remaining_dur / max(len(unallocated_idx), 1)
-        durations[i] = dur
+        char_weights.append(max(len(narration), 1))
+    total_chars = sum(char_weights) or len(scenes)
 
-    # Safety checks
+    durations = [
+        (w / total_chars) * total_audio_duration
+        for w in char_weights
+    ]
+
+    # Optional: if every scene has explicit duration_seconds and they already
+    # sum close to the audio length, keep those (manual overrides / tests).
+    explicit_vals: list[float] = []
+    all_explicit = True
+    for scene in scenes:
+        raw = scene.get("duration_seconds")
+        if raw is None:
+            all_explicit = False
+            break
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            all_explicit = False
+            break
+        if not math.isfinite(val) or val < 1.0:
+            all_explicit = False
+            break
+        explicit_vals.append(val)
+
+    if all_explicit and explicit_vals:
+        explicit_sum = sum(explicit_vals)
+        if explicit_sum > 0 and abs(explicit_sum - total_audio_duration) / total_audio_duration <= 0.15:
+            durations = explicit_vals
+
     for i in range(len(durations)):
         if not math.isfinite(durations[i]) or durations[i] < 1.0:
             durations[i] = 1.0
+
+    # Renormalize lightly so sum ≈ audio after the 1.0s floor
+    total = sum(durations)
+    if total > 0 and abs(total - total_audio_duration) > 0.5:
+        scale = total_audio_duration / total
+        durations = [max(1.0, d * scale) for d in durations]
 
     return durations
 

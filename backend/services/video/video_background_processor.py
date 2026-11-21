@@ -54,16 +54,18 @@ def process_video_background(
         filters = []
         
         # 1. Scale and crop to target aspect ratio
+        # Use force_original_aspect_ratio + crop/pad (portable across FFmpeg builds).
         if background_config.background_fit == BackgroundFit.COVER:
-            # Scale to cover then crop to target dimensions
-            filters.append(f"scale=ow=ih*{width}/{height}:oh=ih:force_original_aspect_ratio=decrease")
-            filters.append(f"crop={width}:{height}")
+            filters.append(
+                f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                f"crop={width}:{height}"
+            )
         elif background_config.background_fit == BackgroundFit.CONTAIN:
-            # Scale to fit within bounds, letterbox with black
-            filters.append(f"scale={width}:{height}:force_original_aspect_ratio=decrease")
-            filters.append(f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black")
+            filters.append(
+                f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+            )
         elif background_config.background_fit in (BackgroundFit.FILL, BackgroundFit.STRETCH):
-            # Stretch to fill (may distort)
             filters.append(f"scale={width}:{height}")
         
         # 2. Trim or loop to target duration
@@ -223,14 +225,18 @@ def apply_video_background_to_scene(
         if not processed_bg:
             return None
         
-        # Overlay scene card on video
-        # Use overlay filter with scene card as PNG overlay
+        # Overlay RGBA scene card on video.
+        # Preserve per-pixel alpha from the transparent card (dark-glass + text).
+        # Do NOT globally fade the overlay — that washed out text and the footage.
         cmd = [
             str(ffmpeg_path),
             "-i", str(processed_bg),
+            "-loop", "1",
             "-i", str(scene_card_path),
             "-filter_complex",
-            f"[1:v]format=rgba,colorchannelmixer=aa={1.0 - background_config.overlay_opacity}[ov];[0:v][ov]overlay=0:0",
+            "[1:v]format=rgba,scale={w}:{h}[ov];[0:v][ov]overlay=0:0:shortest=1".format(
+                w=width, h=height,
+            ),
             "-c:v", "libx264",
             "-preset", "fast",
             "-crf", "23",

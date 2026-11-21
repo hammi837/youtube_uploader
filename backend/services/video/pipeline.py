@@ -329,8 +329,9 @@ def _run_pipeline_sync(
 
     scene_image_paths: list[Path] = []
 
-    # Title card (scene 0)
-    title_card_path = temp_dir / "scene_000_title.png"
+    # Title card (scene 0) — P0.1: overlay + baked gradient for Ken Burns
+    title_overlay_path = temp_dir / "scene_000_title.png"
+    title_card_path = temp_dir / "scene_000_title_with_bg.png"
     if title_card_path.exists() and title_card_path.stat().st_size > 0:
         logger.info("[video_pipeline %s] Reusing existing title card: %s", job_id, title_card_path.name)
         scene_image_paths.append(title_card_path)
@@ -340,12 +341,19 @@ def _run_pipeline_sync(
             generate_title_card(
                 title=title,
                 hook=hook,
-                output_path=title_card_path,
+                output_path=title_overlay_path,
                 width=width,
                 height=height,
                 topic_seed=title,
                 template=template,  # Phase 3E.1
                 aspect_ratio=aspect_ratio,  # Phase 3E.2
+            )
+            title_card_path = apply_background_to_scene(
+                title_overlay_path,
+                get_background_config(background_type="gradient"),
+                width,
+                height,
+                topic_seed=title,
             )
             scene_image_paths.append(title_card_path)
             logger.info("[video_pipeline %s] Title card generated: %s", job_id, title_card_path.name)
@@ -354,10 +362,18 @@ def _run_pipeline_sync(
 
     for i, scene in enumerate(scenes):
         card_path = temp_dir / f"scene_{i + 1:03d}.png"
-        # Phase 3G: artifact-level idempotency — reuse valid existing PNG
-        if card_path.exists() and card_path.stat().st_size > 0:
-            logger.info("[video_pipeline %s] Reusing existing scene card %d: %s", job_id, i + 1, card_path.name)
-            scene_image_paths.append(card_path)
+        composited_path = temp_dir / f"scene_{i + 1:03d}_with_bg.png"
+        scene_bg_type = scene.get("background_type") or "gradient"
+
+        # Phase 3G / P0.1: reuse composited frame when present; for video bg reuse overlay PNG
+        if scene_bg_type == "local_video":
+            reusable = card_path if card_path.exists() and card_path.stat().st_size > 0 else None
+        else:
+            reusable = composited_path if composited_path.exists() and composited_path.stat().st_size > 0 else None
+
+        if reusable is not None:
+            logger.info("[video_pipeline %s] Reusing existing scene visual %d: %s", job_id, i + 1, reusable.name)
+            scene_image_paths.append(reusable)
             continue
         try:
             logger.info("[video_pipeline %s] Generating scene card %d/%d", job_id, i + 1, len(scenes))
@@ -374,16 +390,17 @@ def _run_pipeline_sync(
                 aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
 
-            # Phase 3E.3: Apply image/solid color background if configured in scene
-            scene_bg_type = scene.get("background_type")
-            if scene_bg_type and scene_bg_type != "local_video":
+            # P0.1: composite under image/solid/gradient; keep RGBA overlay for local_video
+            if scene_bg_type != "local_video":
                 scene_bg_config = get_background_config(
                     background_type=scene_bg_type,
                     background_path=scene.get("background_path"),
                     background_color=scene.get("background_color"),
                     background_fit=scene.get("background_fit", "cover"),
                 )
-                card_path = apply_background_to_scene(card_path, scene_bg_config, width, height)
+                card_path = apply_background_to_scene(
+                    card_path, scene_bg_config, width, height, topic_seed=title,
+                )
 
             scene_image_paths.append(card_path)
             logger.info("[video_pipeline %s] Scene card %d generated: %s", job_id, i + 1, card_path.name)

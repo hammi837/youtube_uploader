@@ -1,21 +1,46 @@
 """
-Background visual processing for video generation (Phase 3E.3).
+Background visual processing for video generation (Phase 3E.3 / P0.1).
 
-Supports image backgrounds with Pillow-based compositing.
-Video background support deferred to follow-up phase.
+Composites RGBA text-overlay scene cards onto image / solid / gradient backgrounds.
+Full-frame darkening overlays are NOT applied — readability comes from dark-glass
+panels drawn on the scene card itself.
 """
 
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw
+from PIL import Image
 from backend.services.video.background_config import (
     BackgroundConfig,
     BackgroundType,
     BackgroundFit,
-    get_background_config,
-    get_default_background_config,
 )
+
+
+def _composite_overlay_on_background(
+    scene_card_path: Path,
+    background: Image.Image,
+    width: int,
+    height: int,
+) -> Path:
+    """
+    Paste an RGBA scene overlay onto an opaque background and save as PNG.
+    Returns path to composited image (*_with_bg.png).
+    """
+    scene_card = Image.open(scene_card_path).convert("RGBA")
+    if background.size != (width, height):
+        background = background.resize((width, height), Image.Resampling.LANCZOS)
+    if background.mode != "RGBA":
+        background = background.convert("RGBA")
+
+    composite = background.copy()
+    composite.paste(scene_card, (0, 0), scene_card)
+
+    # Ken Burns / FFmpeg image inputs work best as opaque RGB frames
+    output = composite.convert("RGB")
+    output_path = scene_card_path.parent / f"{scene_card_path.stem}_with_bg.png"
+    output.save(str(output_path), "PNG")
+    return output_path
 
 
 def apply_image_background(
@@ -24,19 +49,7 @@ def apply_image_background(
     width: int,
     height: int,
 ) -> Path:
-    """
-    Apply an image background to a scene card.
-
-    Args:
-        scene_card_path: Path to the generated scene card PNG
-        background_config: Background configuration
-        width: Target width
-        height: Target height
-
-    Returns:
-        Path to the composite image with background.
-        Returns original path if background cannot be applied.
-    """
+    """Apply a local image background under an RGBA scene overlay."""
     if background_config.background_type != BackgroundType.LOCAL_IMAGE:
         return scene_card_path
 
@@ -48,82 +61,52 @@ def apply_image_background(
         return scene_card_path
 
     try:
-        # Load scene card and background
-        scene_card = Image.open(scene_card_path).convert("RGBA")
         background = Image.open(bg_path).convert("RGBA")
 
-        # Resize background to target dimensions based on fit mode
         if background_config.background_fit == BackgroundFit.COVER:
-            # Crop to fill (may clip edges)
             bg_resized = Image.new("RGBA", (width, height), (0, 0, 0, 255))
-            # Calculate scaling
-            bg_ratio = background.width / background.height
-            target_ratio = width / height
-            
+            bg_ratio = background.width / max(background.height, 1)
+            target_ratio = width / max(height, 1)
+
             if bg_ratio > target_ratio:
-                # Background is wider than target
                 new_height = height
                 new_width = int(height * bg_ratio)
             else:
-                # Background is taller than target
                 new_width = width
                 new_height = int(width / bg_ratio)
-            
+
             bg_scaled = background.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Center crop
             left = (new_width - width) // 2
             top = (new_height - height) // 2
             bg_resized.paste(bg_scaled, (-left, -top))
-            
+
         elif background_config.background_fit == BackgroundFit.CONTAIN:
-            # Fit within bounds (may have letterbox)
-            bg_ratio = background.width / background.height
-            target_ratio = width / height
-            
+            bg_ratio = background.width / max(background.height, 1)
+            target_ratio = width / max(height, 1)
+
             if bg_ratio > target_ratio:
-                # Background is wider than target
                 new_width = width
                 new_height = int(width / bg_ratio)
             else:
-                # Background is taller than target
                 new_height = height
                 new_width = int(height * bg_ratio)
-            
+
             bg_scaled = background.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            
-            # Center placement
             bg_resized = Image.new("RGBA", (width, height), (0, 0, 0, 255))
             left = (width - new_width) // 2
             top = (height - new_height) // 2
             bg_resized.paste(bg_scaled, (left, top))
-            
-        else:  # FILL or STRETCH
-            # Stretch to fill (may distort)
+
+        else:  # FILL / STRETCH
             bg_resized = background.resize((width, height), Image.Resampling.LANCZOS)
 
-        # Apply background first
-        composite = bg_resized.copy()
-
-        # Apply scene card on top
-        composite.paste(scene_card, (0, 0), scene_card)
-
-        # Apply dark overlay for text readability
-        if background_config.overlay_opacity > 0:
-            overlay = Image.new("RGBA", (width, height), (0, 0, 0, int(255 * background_config.overlay_opacity)))
-            composite = Image.alpha_composite(composite, overlay)
-
-        # Save composite
-        output_path = scene_card_path.parent / f"{scene_card_path.stem}_with_bg{scene_card_path.suffix}"
-        composite.save(str(output_path), "PNG")
-
-        return output_path
+        return _composite_overlay_on_background(scene_card_path, bg_resized, width, height)
 
     except Exception as e:
-        # Fall back to original scene card if background processing fails
         import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Failed to apply image background: {e}, using original scene card")
+        logging.getLogger(__name__).warning(
+            "Failed to apply image background: %s, using original scene card", e
+        )
         return scene_card_path
 
 
@@ -133,19 +116,7 @@ def apply_solid_color_background(
     width: int,
     height: int,
 ) -> Path:
-    """
-    Apply a solid color background to a scene card.
-
-    Args:
-        scene_card_path: Path to the generated scene card PNG
-        background_config: Background configuration
-        width: Target width
-        height: Target height
-
-    Returns:
-        Path to the composite image with background.
-        Returns original path if background cannot be applied.
-    """
+    """Apply a solid color background under an RGBA scene overlay."""
     if background_config.background_type != BackgroundType.SOLID_COLOR:
         return scene_card_path
 
@@ -153,34 +124,33 @@ def apply_solid_color_background(
         return scene_card_path
 
     try:
-        # Load scene card
-        scene_card = Image.open(scene_card_path).convert("RGBA")
-
-        # Create solid color background
         background = Image.new("RGBA", (width, height), background_config.background_color)
-
-        # Apply background first
-        composite = background.copy()
-
-        # Apply scene card on top
-        composite.paste(scene_card, (0, 0), scene_card)
-
-        # Apply dark overlay for text readability
-        if background_config.overlay_opacity > 0:
-            overlay = Image.new("RGBA", (width, height), (0, 0, 0, int(255 * background_config.overlay_opacity)))
-            composite = Image.alpha_composite(composite, overlay)
-
-        # Save composite
-        output_path = scene_card_path.parent / f"{scene_card_path.stem}_with_bg{scene_card_path.suffix}"
-        composite.save(str(output_path), "PNG")
-
-        return output_path
-
+        return _composite_overlay_on_background(scene_card_path, background, width, height)
     except Exception as e:
-        # Fall back to original scene card if background processing fails
         import logging
-        logger = logging.getLogger(__name__)
-        logger.warning(f"Failed to apply solid color background: {e}, using original scene card")
+        logging.getLogger(__name__).warning(
+            "Failed to apply solid color background: %s, using original scene card", e
+        )
+        return scene_card_path
+
+
+def apply_gradient_background(
+    scene_card_path: Path,
+    width: int,
+    height: int,
+    topic_seed: str = "",
+) -> Path:
+    """Bake a palette gradient under an RGBA overlay (fallback / default mode)."""
+    try:
+        from backend.services.video.visual_builder import pick_gradient_palette, _make_gradient
+        bg_top, bg_bottom, *_rest = pick_gradient_palette(topic_seed or scene_card_path.stem)
+        gradient = _make_gradient(width, height, bg_top, bg_bottom).convert("RGBA")
+        return _composite_overlay_on_background(scene_card_path, gradient, width, height)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Failed to apply gradient background: %s, using original scene card", e
+        )
         return scene_card_path
 
 
@@ -189,24 +159,20 @@ def apply_background_to_scene(
     background_config: BackgroundConfig,
     width: int,
     height: int,
+    topic_seed: str = "",
 ) -> Path:
     """
-    Apply background to a scene card based on configuration.
+    Apply background under a scene overlay based on configuration.
 
-    Args:
-        scene_card_path: Path to the generated scene card PNG
-        background_config: Background configuration
-        width: Target width
-        height: Target height
-
-    Returns:
-        Path to the composite image with background.
-        Returns original path if background cannot be applied.
+    Gradient / placeholder / unknown types bake a gradient so transparent
+    overlays remain valid Ken Burns frames.
     """
     if background_config.background_type == BackgroundType.LOCAL_IMAGE:
         return apply_image_background(scene_card_path, background_config, width, height)
-    elif background_config.background_type == BackgroundType.SOLID_COLOR:
+    if background_config.background_type == BackgroundType.SOLID_COLOR:
         return apply_solid_color_background(scene_card_path, background_config, width, height)
-    else:
-        # For gradient, placeholder, or local_video (deferred), use original
+    if background_config.background_type == BackgroundType.LOCAL_VIDEO:
+        # Video is composited later in FFmpeg; keep transparent overlay PNG.
         return scene_card_path
+    # gradient, placeholder, visual_provider (pre-resolved), etc.
+    return apply_gradient_background(scene_card_path, width, height, topic_seed=topic_seed)
