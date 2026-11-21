@@ -3,19 +3,12 @@ backend/services/script_generator.py — Script generation service.
 
 Orchestrates research → LLM prompt → structured JSON → validation.
 
-Factuality rules (enforced in prompts):
-  - The LLM must use supplied research as the factual basis.
-  - It must NOT invent statistics, dates, quotations, or studies.
-  - It must NOT fabricate sources or URLs.
-  - Uncertain claims must be phrased cautiously or omitted.
-
-The generated script is validated against the GeneratedScript Pydantic model
-before being returned or persisted.
+P0.3: Target narration length is derived from requested duration × WPM.
+The LLM's estimated_duration_seconds is NOT trusted as ground truth.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -28,6 +21,16 @@ from backend.services.llm.base import LLMError, LLMJSONError
 from backend.services.llm.factory import get_llm_provider
 from backend.services.research.base import ResearchNoSourcesError, ResearchResult
 from backend.services.research.factory import get_research_provider
+from backend.services.script_length import (
+    ScriptTooShortError,
+    count_script_narration_words,
+    count_words,
+    estimate_duration_from_words,
+    get_narration_wpm,
+    min_word_count,
+    target_word_count,
+    words_per_scene,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,7 @@ WRITING STYLE:
 - Clear transitions between scenes.
 - Engaging but not clickbait. No fake claims.
 - Target audience: curious general public.
+- Do NOT pad with repeated sentences, empty platitudes, or meaningless filler.
 """
 
 _SCRIPT_PROMPT_TEMPLATE = """\
@@ -62,9 +66,13 @@ Generate a complete YouTube video script for the following topic.
 TOPIC: {topic}
 LANGUAGE: {language}
 TONE: {tone}
-TARGET DURATION: approximately {target_duration_seconds} seconds \
+TARGET DURATION: {target_duration_seconds} seconds \
 ({target_duration_minutes:.1f} minutes)
-NUMBER OF SCENES: approximately {scene_count}
+NUMBER OF SCENES: {scene_count}
+TARGET SPOKEN WORD COUNT: {target_words} words total \
+(planning rate ≈ {wpm:.0f} words/minute)
+MINIMUM ACCEPTABLE WORDS: {min_words}
+APPROXIMATE WORDS PER SCENE (excluding hook): {words_per_scene}
 
 --- RESEARCH CONTEXT ---
 {research_context}
@@ -77,30 +85,61 @@ Generate a structured JSON object with EXACTLY this schema:
   "description": "YouTube description (2–4 paragraphs, naturally includes relevant keywords, \
 no keyword stuffing, no fabricated references)",
   "tags": ["tag1", "tag2", ...],
-  "hook": "First 10–20 seconds of narration — must immediately grab attention",
+  "hook": "Opening narration only (about 35–50 words). Do NOT repeat this text inside scenes.",
   "estimated_duration_seconds": <integer>,
   "scenes": [
     {{
       "scene_number": 1,
-      "narration": "The spoken narration text for this scene",
-      "visual_description": "Description for a future visual-generation system. \
-Describe what should be shown on screen (B-roll, graphics, text overlay, etc.)",
+      "narration": "Spoken narration for this scene — enough words to meet the per-scene budget",
+      "visual_description": "Internal visual guidance for image generation (NOT spoken aloud)",
       "estimated_duration_seconds": <integer>
     }},
     ...
   ]
 }}
 
-IMPORTANT:
+LENGTH REQUIREMENTS (critical):
+- The TOTAL spoken words (hook + all scene narrations) MUST be at least {min_words} \
+and should be close to {target_words}.
+- Write substantial scene narration (typically several sentences per scene), \
+not 1–2 short lines.
+- Cover the topic thoroughly using the research: explanations, examples, \
+comparisons, and a clear closing takeaway.
+- Do NOT meet the word count by repeating the same sentence or padding with fluff.
+- estimated_duration_seconds fields are hints only; word count is what matters.
+
+OTHER RULES:
 - Title: max 100 characters. Natural and clickable, not misleading.
 - Tags: 5–15 relevant tags. No spam. Array of strings.
-- Hook narration: 2–4 sentences maximum.
-- Each scene narration: 1–3 sentences.
-- Visual descriptions: concise, actionable (e.g. "Aerial view of a city at night", \
-"Text overlay: 3 FACTS", "Close-up of a computer screen showing code").
-- Total scene estimated_duration_seconds must roughly sum to target duration.
+- Visual descriptions: concise, actionable; never spoken.
 - The script must be suitable for faceless narrated YouTube content.
 - ONLY output valid JSON. No markdown, no explanation, no text outside the JSON object.
+"""
+
+_EXPAND_PROMPT_TEMPLATE = """\
+The following YouTube script is TOO SHORT for the target runtime.
+
+TOPIC: {topic}
+TARGET DURATION: {target_duration_seconds} seconds
+TARGET SPOKEN WORDS: {target_words}
+CURRENT SPOKEN WORDS: {current_words}
+SHORTFALL: about {shortfall} words
+RESEARCH CONTEXT (factual basis only):
+{research_context}
+
+CURRENT SCRIPT JSON:
+{script_json}
+
+Return an UPDATED JSON object with the SAME schema (title, description, tags, hook, \
+estimated_duration_seconds, scenes). Expand scene narrations (and lightly the hook if needed) \
+so total spoken words reach at least {min_words} and ideally {target_words}.
+
+Rules:
+- Keep the same topic, tone, and approximate scene count.
+- Use ONLY facts supported by the research context — do not invent studies or numbers.
+- Do NOT repeat sentences to pad length.
+- Do NOT put visual prompts into narration.
+- ONLY output valid JSON.
 """
 
 
@@ -108,24 +147,23 @@ IMPORTANT:
 
 def generate_script(request: ScriptRequest) -> tuple[ResearchResult, GeneratedScript]:
     """
-    Research a topic and generate a structured script.
-
-    Steps:
-        1. Research the topic via the configured research provider.
-        2. Build a research-grounded prompt.
-        3. Call the LLM to generate structured JSON.
-        4. Validate the JSON against GeneratedScript Pydantic model.
-        5. Return (ResearchResult, GeneratedScript).
+    Research a topic and generate a structured script with duration-aware length.
 
     Raises:
-        ResearchError:    Research step failed.
-        LLMError:         LLM step failed.
-        LLMJSONError:     LLM returned malformed JSON.
-        ValidationError:  Pydantic validation failed.
+        ResearchError / ResearchNoSourcesError
+        LLMError / LLMJSONError
+        ScriptTooShortError: narration still too short after one expansion
     """
+    wpm = get_narration_wpm()
+    target_words = target_word_count(request.target_duration_seconds, wpm=wpm)
+    min_words = min_word_count(request.target_duration_seconds, wpm=wpm)
+    per_scene = words_per_scene(target_words, request.scene_count)
+
     logger.info(
-        "Script generation started: topic='%s' duration=%ds scenes=%d",
+        "Script generation started: topic='%s' duration=%ds scenes=%d "
+        "target_words=%d min_words=%d wpm=%.0f",
         request.topic, request.target_duration_seconds, request.scene_count,
+        target_words, min_words, wpm,
     )
 
     # ── Step 1: Research ───────────────────────────────────────────────────
@@ -142,7 +180,6 @@ def generate_script(request: ScriptRequest) -> tuple[ResearchResult, GeneratedSc
         len(research.sources), len(research.key_facts),
     )
 
-    # ── Step 1b: Guard — never generate with zero sources ─────────────────
     if not research.sources:
         raise ResearchNoSourcesError(
             f"No reliable web sources were found for: '{request.topic}'. "
@@ -150,7 +187,6 @@ def generate_script(request: ScriptRequest) -> tuple[ResearchResult, GeneratedSc
             "Try rephrasing the topic or using different keywords."
         )
 
-    # ── Step 2: Build prompt ───────────────────────────────────────────────
     research_context = _build_research_context(research)
     prompt = _SCRIPT_PROMPT_TEMPLATE.format(
         topic=request.topic,
@@ -159,11 +195,13 @@ def generate_script(request: ScriptRequest) -> tuple[ResearchResult, GeneratedSc
         target_duration_seconds=request.target_duration_seconds,
         target_duration_minutes=request.target_duration_seconds / 60,
         scene_count=request.scene_count,
+        target_words=target_words,
+        min_words=min_words,
+        words_per_scene=per_scene,
+        wpm=wpm,
         research_context=research_context,
     )
 
-    # ── Step 3: LLM generation ─────────────────────────────────────────────
-    logger.info("Script generation started via LLM provider")
     llm = get_llm_provider()
     logger.info("Using LLM provider: %s", llm.provider_name)
 
@@ -171,23 +209,138 @@ def generate_script(request: ScriptRequest) -> tuple[ResearchResult, GeneratedSc
         prompt,
         system_prompt=_SYSTEM_PROMPT,
         temperature=0.6,
-        max_tokens=4096,
+        max_tokens=8192,
+    )
+    script = _validate_script(raw_json, request)
+    word_count = count_script_narration_words(script)
+    logger.info(
+        "Initial script word count=%d (target=%d min=%d)",
+        word_count, target_words, min_words,
     )
 
-    logger.info("LLM response received, validating schema")
+    # ── One controlled expansion if materially short ───────────────────────
+    if word_count < min_words:
+        logger.warning(
+            "Script too short (%d < %d). Attempting one expansion pass.",
+            word_count, min_words,
+        )
+        script = _expand_script_once(
+            llm=llm,
+            request=request,
+            research_context=research_context,
+            script=script,
+            current_words=word_count,
+            target_words=target_words,
+            min_words=min_words,
+        )
+        word_count = count_script_narration_words(script)
+        logger.info(
+            "After expansion word count=%d (target=%d min=%d)",
+            word_count, target_words, min_words,
+        )
 
-    # ── Step 4: Validate and coerce ────────────────────────────────────────
-    script = _validate_script(raw_json, request)
+    if word_count < min_words:
+        raise ScriptTooShortError(
+            f"Script narration is too short for a {request.target_duration_seconds}s video: "
+            f"{word_count} words (minimum {min_words}, target {target_words} at {wpm:.0f} WPM). "
+            "Regeneration did not reach the required length."
+        )
+
+    # Duration estimate from actual words — never trust LLM duration claims
+    script = _apply_word_based_timing(script, request, word_count, wpm)
 
     logger.info(
-        "Script generation completed: title='%s' scenes=%d duration=%ds",
-        script.title, len(script.scenes), script.estimated_duration_seconds,
+        "Script generation completed: title='%s' scenes=%d words=%d "
+        "estimated_duration=%ds (from words, not LLM claim)",
+        script.title, len(script.scenes), word_count, script.estimated_duration_seconds,
     )
-
     return research, script
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _expand_script_once(
+    *,
+    llm,
+    request: ScriptRequest,
+    research_context: str,
+    script: GeneratedScript,
+    current_words: int,
+    target_words: int,
+    min_words: int,
+) -> GeneratedScript:
+    import json as _json
+
+    prompt = _EXPAND_PROMPT_TEMPLATE.format(
+        topic=request.topic,
+        target_duration_seconds=request.target_duration_seconds,
+        target_words=target_words,
+        min_words=min_words,
+        current_words=current_words,
+        shortfall=max(0, target_words - current_words),
+        research_context=research_context,
+        script_json=_json.dumps(script.model_dump(), ensure_ascii=False),
+    )
+    try:
+        raw = llm.generate_json(
+            prompt,
+            system_prompt=_SYSTEM_PROMPT,
+            temperature=0.5,
+            max_tokens=8192,
+        )
+        expanded = _validate_script(raw, request)
+        if count_script_narration_words(expanded) >= current_words:
+            return expanded
+        logger.warning("Expansion returned fewer/equal words — keeping previous script.")
+        return script
+    except (LLMError, LLMJSONError) as exc:
+        logger.warning("Script expansion failed (%s) — keeping previous script.", exc)
+        return script
+
+
+def _apply_word_based_timing(
+    script: GeneratedScript,
+    request: ScriptRequest,
+    word_count: int,
+    wpm: float,
+) -> GeneratedScript:
+    """Overwrite estimated durations from word counts (proportional per scene)."""
+    hook_words = count_words(script.hook or "")
+    scene_word_counts = [count_words(s.narration) for s in script.scenes]
+    total_parts = hook_words + sum(scene_word_counts)
+    est_total = estimate_duration_from_words(word_count, wpm=wpm)
+
+    # Prefer target duration when word count is in band; else use word-implied length
+    target = int(request.target_duration_seconds)
+    if abs(est_total - target) / max(target, 1) <= 0.20:
+        timing_total = target
+    else:
+        timing_total = est_total
+
+    updated_scenes: list[Scene] = []
+    for i, scene in enumerate(script.scenes):
+        sw = scene_word_counts[i] if i < len(scene_word_counts) else 0
+        if total_parts > 0:
+            share = sw / total_parts
+        else:
+            share = 1.0 / max(len(script.scenes), 1)
+        scene_secs = max(5, int(round(timing_total * share)))
+        updated_scenes.append(Scene(
+            scene_number=scene.scene_number,
+            narration=scene.narration,
+            visual_description=scene.visual_description,
+            estimated_duration_seconds=scene_secs,
+        ))
+
+    return GeneratedScript(
+        title=script.title,
+        description=script.description,
+        tags=script.tags,
+        hook=script.hook,
+        estimated_duration_seconds=timing_total,
+        scenes=updated_scenes,
+    )
+
 
 def _build_research_context(research: ResearchResult) -> str:
     """Format research results into a concise text block for the LLM prompt."""
@@ -206,7 +359,7 @@ def _build_research_context(research: ResearchResult) -> str:
                     lines.append(f"    • {point}")
 
     if research.key_facts:
-        lines.append(f"\nKey facts extracted from research:")
+        lines.append("\nKey facts extracted from research:")
         for fact in research.key_facts[:10]:
             lines.append(f"  - {fact}")
 
@@ -220,17 +373,14 @@ def _validate_script(raw: dict[str, Any], request: ScriptRequest) -> GeneratedSc
     Applies sensible defaults and clamping for fields that are present
     but out of range, rather than rejecting valid partial responses.
     """
-    # Coerce title to max 100 chars
     title = str(raw.get("title", request.topic))[:100]
 
-    # Ensure tags is a list of strings
     raw_tags = raw.get("tags", [])
     if isinstance(raw_tags, list):
         tags = [str(t).strip() for t in raw_tags if str(t).strip()][:20]
     else:
         tags = []
 
-    # Ensure scenes is a list
     raw_scenes = raw.get("scenes", [])
     if not isinstance(raw_scenes, list) or len(raw_scenes) == 0:
         raise LLMJSONError(
@@ -244,7 +394,7 @@ def _validate_script(raw: dict[str, Any], request: ScriptRequest) -> GeneratedSc
             continue
         narration = str(s.get("narration", "")).strip()
         if not narration:
-            continue  # skip empty scenes
+            continue
         scenes.append(Scene(
             scene_number=int(s.get("scene_number", i + 1)),
             narration=narration,
@@ -255,7 +405,6 @@ def _validate_script(raw: dict[str, Any], request: ScriptRequest) -> GeneratedSc
     if not scenes:
         raise LLMJSONError("No valid scenes found in LLM response after filtering.")
 
-    # Compute or use estimated duration
     scene_total = sum(sc.estimated_duration_seconds for sc in scenes)
     estimated_duration = int(raw.get("estimated_duration_seconds", scene_total))
     if estimated_duration <= 0:

@@ -1354,9 +1354,14 @@ def _retry_call(
     """
     from backend.services.queue_services import log_job, get_retry_delay
     from backend.services.research.base import ResearchNoSourcesError, ResearchEmptyTopicError
+    from backend.services.script_length import ScriptTooShortError
 
     # These are never retriable — fail immediately with a clear message
-    _permanent_by_type = (ResearchNoSourcesError, ResearchEmptyTopicError) + permanent_exceptions
+    _permanent_by_type = (
+        ResearchNoSourcesError,
+        ResearchEmptyTopicError,
+        ScriptTooShortError,
+    ) + permanent_exceptions
 
     last_exc = None
     for attempt in range(1, max_retries + 2):  # max_retries + 1 attempts total
