@@ -253,13 +253,15 @@ class TestAutoTTSManager:
             asyncio.run(manager.synthesize("", "en-US-AriaNeural", str(tmp_path / "out.mp3")))
         manager._fallback.synthesize.assert_not_called()
 
-    # F. Edge ConfigError → NOT caught, bubbles up
-    def test_edge_config_error_not_caught(self, tmp_path):
+    # F. Edge ConfigError → P0.4: falls through to next provider (degraded path)
+    def test_edge_config_error_falls_back(self, tmp_path):
         primary_exc = TTSConfigError("edge-tts not installed")
-        manager = self._make_manager(primary_exc=primary_exc)
-        with pytest.raises(TTSConfigError):
-            asyncio.run(manager.synthesize("Hello.", "en-US-AriaNeural", str(tmp_path / "out.mp3")))
-        manager._fallback.synthesize.assert_not_called()
+        fallback_res = _make_tts_result(str(tmp_path / "out.wav"), "local", "wav")
+        manager = self._make_manager(primary_exc=primary_exc, fallback_result=fallback_res)
+        result = asyncio.run(manager.synthesize("Hello.", "en-US-AriaNeural", str(tmp_path / "out.mp3")))
+        assert manager.last_used_provider == "local"
+        assert result.format == "wav"
+        manager._fallback.synthesize.assert_called_once()
 
     # G. Both fail — local error raised
     def test_both_fail_raises_local_error(self, tmp_path):
@@ -595,7 +597,27 @@ class TestTTSFactory:
         with patch.dict(os.environ, {"TTS_PROVIDER": "auto",
                                       "TTS_OUTPUT_DIR": str(tmp_path)}):
             p = get_tts_provider()
+        # P0.4: last provider in the chain is always local SAPI
         assert isinstance(p._fallback, LocalTTSProvider)
+        assert p.providers[-1].provider_name == "local"
+
+    def test_auto_mode_includes_piper_when_model_present(self, tmp_path):
+        from backend.services.tts.factory import get_tts_provider
+        model_dir = tmp_path / "piper"
+        model_dir.mkdir()
+        (model_dir / "en_US-ljspeech-medium.onnx").write_bytes(b"x")
+        (model_dir / "en_US-ljspeech-medium.onnx.json").write_text("{}", encoding="utf-8")
+        with patch.dict(os.environ, {
+            "TTS_PROVIDER": "auto",
+            "TTS_OUTPUT_DIR": str(tmp_path),
+            "PIPER_MODEL_DIR": str(model_dir),
+            "PIPER_VOICE": "en_US-ljspeech-medium",
+        }, clear=False):
+            p = get_tts_provider()
+        names = [x.provider_name for x in p.providers]
+        assert names[0] == "edge"
+        assert "piper" in names
+        assert names[-1] == "local"
 
 
 # ── R–U: Provider field in API responses ─────────────────────────────────────

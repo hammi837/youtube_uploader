@@ -315,10 +315,11 @@ class TestNarrationExtraction:
         assert "ORM hook text." in result
         assert "ORM scene narration." in result
 
-    def test_duration_estimation(self):
+    def test_duration_estimation(self, monkeypatch):
         from backend.services.tts.narration import estimate_narration_duration
-        # 150 words should be ~60 seconds
-        text = " ".join(["word"] * 150)
+        # P0.3: planning rate defaults to NARRATION_WPM (140) → 140 words ≈ 60s
+        monkeypatch.setenv("NARRATION_WPM", "140")
+        text = " ".join(["word"] * 140)
         duration = estimate_narration_duration(text)
         assert abs(duration - 60.0) < 1.0
 

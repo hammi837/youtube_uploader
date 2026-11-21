@@ -452,31 +452,20 @@ class TestDurationSanity:
             deviation = abs(100.0 - audio_dur) / audio_dur  # would raise if audio_dur==0
         # No exception raised
 
-    def test_sanity_warning_logged_on_high_deviation(self, tmp_path, caplog):
-        """When total scene duration deviates >15% from audio, a WARNING is logged."""
-        import logging
+    def test_inflated_explicit_durations_follow_audio(self, tmp_path):
+        """P0.3: explicit duration_seconds that disagree with audio are ignored."""
         from backend.services.video.ffmpeg_assembler import calculate_scene_durations
 
-        # Scenes with explicit durations summing to 120s
+        # Scenes claim 120s total but audio is only 60s — assembly must follow audio
         scenes = [
             {"narration": "a" * 100, "duration_seconds": 60.0},
             {"narration": "b" * 100, "duration_seconds": 60.0},
         ]
-        audio_dur = 60.0  # Total will be ~120s — 100% deviation from 60s audio
-
-        with caplog.at_level(logging.WARNING, logger="backend.services.video.pipeline"):
-            durations = calculate_scene_durations(scenes, audio_dur)
-            total = sum(durations)
-            deviation = abs(total - audio_dur) / audio_dur
-            # The pipeline logs at WARNING when deviation > 0.15
-            if deviation > 0.15:
-                import logging as _logging
-                _logging.getLogger("backend.services.video.pipeline").warning(
-                    "Duration sanity: total %.1f deviates %.0f%% from audio %.1f",
-                    total, deviation * 100, audio_dur,
-                )
-        assert any("Duration sanity" in r.message or "duration" in r.message.lower()
-                   for r in caplog.records) or deviation > 0.15
+        audio_dur = 60.0
+        durations = calculate_scene_durations(scenes, audio_dur)
+        total = sum(durations)
+        assert abs(total - audio_dur) < 1.0
+        assert all(d >= 1.0 for d in durations)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
