@@ -742,11 +742,21 @@ def _stage_generate_video(
             from backend.services.video.aspect_ratio import get_dimensions
             width, height = get_dimensions(aspect_ratio)
 
-            # Phase 3E.4: Get background settings from queue job
-            background_type = qj_template.background_type if qj_template else None
+            # Phase 3E.4 / P0.5: Get background settings from queue job.
+            # None/blank → production_auto (local → free AI → gradient).
+            # Copy scalars now — qj_template becomes detached after db.close().
+            from backend.services.video.production_backgrounds import resolve_job_background_type
+            _raw_bg = qj_template.background_type if qj_template else None
+            background_type = resolve_job_background_type(_raw_bg)
             background_path = qj_template.background_path if qj_template else None
             background_color = qj_template.background_color if qj_template else None
             background_fit = qj_template.background_fit if qj_template else "cover"
+            job_topic = qj_template.topic if qj_template else ""
+            job_tone = qj_template.tone if qj_template else "educational"
+            logger.info(
+                "[queue_video %s] background_type resolved=%s (raw=%r)",
+                job_id, background_type, _raw_bg,
+            )
             
             # Phase 3I: Audio profiles
             tts_voice_for_job = qj_template.tts_voice if qj_template else None
@@ -784,11 +794,16 @@ def _stage_generate_video(
         # Phase 3E.5: Handle auto-selection for local_video_auto
         # Phase 3F.1: Handle auto-selection for local_image_auto
         # Phase 3F.4: Handle visual provider abstraction
+        # P0.5: production_auto when job left background_type unset
         if background_type:
             from backend.content_models import ContentProject
             from backend.services.video.video_asset_discovery import select_auto_backgrounds
             from backend.services.video.image_asset_discovery import select_auto_images
             from backend.services.video.background_config import BackgroundType
+            from backend.services.video.production_backgrounds import (
+                PRODUCTION_AUTO,
+                apply_production_backgrounds,
+            )
 
             db_project = SessionLocal()
             try:
@@ -798,8 +813,33 @@ def _stage_generate_video(
                 if project and project.script:
                     scenes = project.script.scenes_as_list()
 
+                    # P0.5: Production default — local → AI → gradient
+                    if background_type == PRODUCTION_AUTO or background_type == BackgroundType.PRODUCTION_AUTO.value:
+                        from backend.services.visual_prompt_generator import tone_to_visual_style
+                        _topic = job_topic or (project.topic or "")
+                        counts = apply_production_backgrounds(
+                            job_id=job_id,
+                            scenes=scenes,
+                            aspect_ratio=aspect_ratio,
+                            topic=_topic,
+                            visual_style=tone_to_visual_style(job_tone or "educational"),
+                            background_color=background_color,
+                            background_fit=background_fit or "cover",
+                        )
+                        project.script.scenes_json = json.dumps(scenes)
+                        db_project.commit()
+                        _summary = (
+                            f"P0.5 production backgrounds: "
+                            f"local_image={counts['local_image']} "
+                            f"local_video={counts['local_video']} "
+                            f"ai={counts['ai']} gradient={counts['gradient']}"
+                        )
+                        logger.info("[queue_video %s] %s", job_id, _summary)
+                        from backend.services.queue_services import log_job as _log_bg
+                        _log_bg(job_id, _summary, stage="backgrounds")
+
                     # Phase 3E.5: Auto-selection mode for videos
-                    if background_type == BackgroundType.LOCAL_VIDEO_AUTO.value:
+                    elif background_type == BackgroundType.LOCAL_VIDEO_AUTO.value:
                         # Get auto-selected video paths for each scene
                         auto_paths = select_auto_backgrounds(
                             job_id=job_id,
