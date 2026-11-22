@@ -348,9 +348,23 @@ def _run_pipeline_sync(
                 template=template,  # Phase 3E.1
                 aspect_ratio=aspect_ratio,  # Phase 3E.2
             )
+            # P0.5: prefer first scene's real image background for the title card
+            _title_bg_type = "gradient"
+            _title_bg_path = None
+            _title_bg_fit = "cover"
+            if scenes:
+                _s0 = scenes[0] if isinstance(scenes[0], dict) else {}
+                if (_s0.get("background_type") == "local_image" and _s0.get("background_path")):
+                    _title_bg_type = "local_image"
+                    _title_bg_path = _s0.get("background_path")
+                    _title_bg_fit = _s0.get("background_fit") or "cover"
             title_card_path = apply_background_to_scene(
                 title_overlay_path,
-                get_background_config(background_type="gradient"),
+                get_background_config(
+                    background_type=_title_bg_type,
+                    background_path=_title_bg_path,
+                    background_fit=_title_bg_fit,
+                ),
                 width,
                 height,
                 topic_seed=title,

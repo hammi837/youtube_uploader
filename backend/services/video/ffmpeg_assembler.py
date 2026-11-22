@@ -203,15 +203,16 @@ def calculate_scene_durations(
 
 # ── Ken Burns filter ──────────────────────────────────────────────────────────
 
+# P0.6.1: center-only zooms. Lateral pans cropped edge-anchored scene labels.
 _KB_EFFECTS = [
     # zoom in slowly
     "zoompan=z='min(zoom+0.0008,1.05)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
     # zoom out slowly
     "zoompan=z='if(eq(on\\,1)\\,1.05\\,max(zoom-0.0008\\,1.0))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
-    # mild zoom + shift right (x offset grows with frame number)
-    "zoompan=z='1.04':x='iw/2-(iw/zoom/2)+on*1.5':y='ih/2-(ih/zoom/2)'",
-    # mild zoom + shift left
-    "zoompan=z='1.04':x='iw/2-(iw/zoom/2)-on*1.5':y='ih/2-(ih/zoom/2)'",
+    # mild zoom in (replaces former right pan)
+    "zoompan=z='min(zoom+0.0006,1.04)':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
+    # mild zoom out (replaces former left pan)
+    "zoompan=z='if(eq(on\\,1)\\,1.04\\,max(zoom-0.0006\\,1.0))':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)'",
 ]
 
 
@@ -568,20 +569,31 @@ def burn_captions(
     except Exception as enc_exc:
         logger.warning("[burn_captions] SRT encoding fixup failed (%s) — using original copy", enc_exc)
 
-    # ── Step 2: Build subtitle filter ────────────────────────────────────────
-    font_size = max(28, int(height * 0.035))
+    # ── Step 2: Build subtitle filter (P0.6 — restrained lower-third style) ──
+    # libass defaults PlayResY=288 when styling SRT. force_style FontSize/MarginV
+    # are in that coordinate space and scale to the video frame. Convert target
+    # pixel sizes → ASS units so on-screen text stays ~2.2% of frame height.
+    _ass_play_res_y = 288
+    target_font_px = max(16, min(26, int(height * 0.020)))
+    target_margin_px = max(40, int(height * 0.06))
+    font_size = max(6, int(round(target_font_px * _ass_play_res_y / max(height, 1))))
+    margin_v = max(8, int(round(target_margin_px * _ass_play_res_y / max(height, 1))))
+    margin_lr = max(8, int(round(48 * _ass_play_res_y / max(height, 1))))
 
     # Reference by plain filename — no path separators, no drive-letter colon.
     # libass resolves this relative to the FFmpeg working directory (cwd).
+    # BorderStyle=3 uses OutlineColour as the box fill; Outline acts as padding.
     subtitle_filter = (
         f"subtitles='{srt_filename}':"
         f"force_style='FontSize={font_size},"
-        f"PrimaryColour=&H00FFFFFF,"   # white text
-        f"OutlineColour=&H00000000,"   # black outline
-        f"BackColour=&H80000000,"      # semi-transparent shadow
-        f"Outline=2,Shadow=1,"
-        f"MarginV=60,"
-        f"Alignment=2'"                # bottom-center
+        f"PrimaryColour=&H00FFFFFF,"
+        f"OutlineColour=&H80000000,"   # ~50% black box (BorderStyle=3)
+        f"BackColour=&H64000000,"
+        f"BorderStyle=3,"
+        f"Outline=2,Shadow=0,"
+        f"MarginV={margin_v},"
+        f"MarginL={margin_lr},MarginR={margin_lr},"
+        f"Alignment=2'"                # bottom-center safe area
     )
 
     # ── Step 3: Calibrate timeout ─────────────────────────────────────────────

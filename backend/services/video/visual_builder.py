@@ -7,6 +7,11 @@ P0.1: Scene/title cards are RGBA overlays:
   - Opaque readable text
   - visual_description / prompts / emoji hints are NEVER drawn on-screen
 
+P0.6 visual quality:
+  - Title card: video title once only (hook via subtitles)
+  - Scene cards: small scene-number pill only (no repeated title / narration panel)
+  - Background fills most of the frame
+
 Templates:
   - minimal_dark
   - quote_fact
@@ -203,80 +208,61 @@ def _generate_minimal_dark_title_card(
     template: object,
     aspect_ratio: str = "16:9",
 ) -> Path:
+    """
+    P0.6: Title card shows the video title once only.
+    Opening hook is spoken + subtitled — not drawn here (avoids overlap/duplication).
+    """
     from PIL import ImageDraw
+
+    del hook  # hook is reserved for narration/subtitles, not overlay text
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    accent_col, title_col, body_col = _pick_palette(topic_seed or title)
+    accent_col, title_col, _body_col = _pick_palette(topic_seed or title)
     img = _new_overlay_canvas(width, height)
     draw = ImageDraw.Draw(img)
     is_vertical = aspect_ratio == "9:16"
 
     if is_vertical:
-        font_title_size, font_body_size, text_wrap_width = 72, 40, 28
-        panel_w_ratio, panel_pad = 0.88, 36
+        font_title_size, text_wrap_width = 64, 26
+        panel_w_ratio, panel_pad = 0.86, 32
     else:
-        font_title_size, font_body_size, text_wrap_width = 80, 40, 36
-        panel_w_ratio, panel_pad = 0.72, 40
+        font_title_size, text_wrap_width = 68, 34
+        panel_w_ratio, panel_pad = 0.70, 36
 
-    font_title, font_body, _font_small = _load_fonts(font_title_size, font_body_size, 28)
+    font_title, _font_body, _font_small = _load_fonts(font_title_size, 32, 24)
 
-    # Accent bar (semi-opaque)
-    bar_w = 12 if not is_vertical else 16
+    # Thin accent bar
+    bar_w = 10 if not is_vertical else 12
     bar = _new_overlay_canvas(width, height)
-    ImageDraw.Draw(bar).rectangle([0, 0, bar_w, height], fill=(*accent_col, 220))
+    ImageDraw.Draw(bar).rectangle([0, 0, bar_w, height], fill=(*accent_col, 200))
     img.alpha_composite(bar)
 
     title_lines = textwrap.wrap(title.strip(), width=text_wrap_width)[:3]
     title_text = "\n".join(title_lines) or " "
-    hook_text = ""
-    if hook and hook.strip():
-        hook_text = "\n".join(textwrap.wrap(hook.strip()[:180], width=int(text_wrap_width * 1.4))[:3])
+    tw, th = _text_block_size(draw, title_text, font_title, spacing=12)
 
-    tw, th = _text_block_size(draw, title_text, font_title, spacing=14)
-    hw, hh = _text_block_size(draw, hook_text, font_body, spacing=10) if hook_text else (0, 0)
-    content_h = th + (24 + hh if hook_text else 0)
-    content_w = max(tw, hw)
-
-    panel_w = max(int(width * panel_w_ratio), content_w + panel_pad * 2)
-    panel_h = content_h + panel_pad * 2
+    panel_w = max(int(width * panel_w_ratio), tw + panel_pad * 2)
+    panel_h = th + panel_pad * 2
     panel_left = (width - panel_w) // 2
-    panel_top = max((height - panel_h) // 2 - (40 if not is_vertical else 20), int(height * 0.12))
+    # Upper third — leave mid/lower frame clear for opening-hook subtitles
+    panel_top = max(int(height * 0.16) - panel_h // 2, int(height * 0.06))
     panel_right = panel_left + panel_w
-    panel_bottom = panel_top + panel_h
+    panel_bottom = min(panel_top + panel_h, int(height * 0.42))
 
-    # Keep lower caption band clear
-    max_bottom = int(height * 0.78)
-    if panel_bottom > max_bottom:
-        shift = panel_bottom - max_bottom
-        panel_top = max(int(height * 0.08), panel_top - shift)
-        panel_bottom = panel_top + panel_h
-
-    _draw_glass_panel(img, (panel_left, panel_top, panel_right, panel_bottom), radius=28)
+    _draw_glass_panel(img, (panel_left, panel_top, panel_right, panel_bottom), radius=22)
 
     draw = ImageDraw.Draw(img)
-    title_x = width // 2
-    title_y = panel_top + panel_pad
     draw.multiline_text(
-        (title_x, title_y),
+        (width // 2, panel_top + panel_pad),
         title_text,
         fill=(*title_col, 255),
         font=font_title,
         anchor="ma",
         align="center",
-        spacing=14,
+        spacing=12,
     )
-    if hook_text:
-        draw.multiline_text(
-            (title_x, title_y + th + 24),
-            hook_text,
-            fill=(*body_col, 255),
-            font=font_body,
-            anchor="ma",
-            align="center",
-            spacing=10,
-        )
 
     img.save(str(out), "PNG", optimize=False)
     logger.debug("Minimal dark title overlay written: %s", out)
@@ -293,72 +279,56 @@ def _generate_quote_fact_title_card(
     template: object,
     aspect_ratio: str = "16:9",
 ) -> Path:
+    """P0.6: Title once only — hook stays in narration/subtitles."""
     from PIL import ImageDraw
+
+    del hook
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    accent_col, title_col, body_col = _pick_palette(topic_seed or title)
+    accent_col, title_col, _body_col = _pick_palette(topic_seed or title)
     img = _new_overlay_canvas(width, height)
     is_vertical = aspect_ratio == "9:16"
 
     if is_vertical:
-        font_title_size, font_body_size, text_wrap_width = 80, 48, 26
-        panel_w_ratio, panel_pad = 0.90, 40
+        font_title_size, text_wrap_width = 68, 24
+        panel_w_ratio, panel_pad = 0.88, 36
     else:
-        font_title_size, font_body_size, text_wrap_width = 88, 48, 32
-        panel_w_ratio, panel_pad = 0.74, 44
+        font_title_size, text_wrap_width = 72, 30
+        panel_w_ratio, panel_pad = 0.72, 40
 
-    font_title, font_body, _font_small = _load_fonts(font_title_size, font_body_size, 32)
+    font_title, _font_body, _font_small = _load_fonts(font_title_size, 36, 28)
 
-    bar_w = 24 if not is_vertical else 32
+    bar_w = 16 if not is_vertical else 20
     bar = _new_overlay_canvas(width, height)
-    ImageDraw.Draw(bar).rectangle([0, 0, bar_w, height], fill=(*accent_col, 230))
+    ImageDraw.Draw(bar).rectangle([0, 0, bar_w, height], fill=(*accent_col, 220))
     img.alpha_composite(bar)
 
     draw = ImageDraw.Draw(img)
     title_lines = textwrap.wrap(title.strip(), width=text_wrap_width)[:3]
     title_text = "\n".join(title_lines) or " "
-    hook_text = ""
-    if hook and hook.strip():
-        hook_text = "\n".join(textwrap.wrap(hook.strip()[:180], width=int(text_wrap_width * 1.5))[:3])
+    tw, th = _text_block_size(draw, title_text, font_title, spacing=14)
 
-    tw, th = _text_block_size(draw, title_text, font_title, spacing=16)
-    hw, hh = _text_block_size(draw, hook_text, font_body, spacing=12) if hook_text else (0, 0)
-    content_h = th + (28 + hh if hook_text else 0)
-    content_w = max(tw, hw)
-
-    panel_w = max(int(width * panel_w_ratio), content_w + panel_pad * 2)
-    panel_h = content_h + panel_pad * 2
+    panel_w = max(int(width * panel_w_ratio), tw + panel_pad * 2)
+    panel_h = th + panel_pad * 2
     panel_left = (width - panel_w) // 2
-    panel_top = max((height - panel_h) // 2 - 50, int(height * 0.10))
+    panel_top = max(int(height * 0.16) - panel_h // 2, int(height * 0.06))
     panel_right = panel_left + panel_w
-    panel_bottom = min(panel_top + panel_h, int(height * 0.78))
+    panel_bottom = min(panel_top + panel_h, int(height * 0.42))
 
-    _draw_glass_panel(img, (panel_left, panel_top, panel_right, panel_bottom), radius=32)
+    _draw_glass_panel(img, (panel_left, panel_top, panel_right, panel_bottom), radius=28)
 
     draw = ImageDraw.Draw(img)
-    title_x = width // 2
-    title_y = panel_top + panel_pad
     draw.multiline_text(
-        (title_x, title_y),
+        (width // 2, panel_top + panel_pad),
         title_text,
         fill=(*title_col, 255),
         font=font_title,
         anchor="ma",
         align="center",
-        spacing=16,
+        spacing=14,
     )
-    if hook_text:
-        draw.multiline_text(
-            (title_x, title_y + th + 28),
-            hook_text,
-            fill=(*accent_col, 255),
-            font=font_body,
-            anchor="ma",
-            align="center",
-            spacing=12,
-        )
 
     img.save(str(out), "PNG", optimize=False)
     logger.debug("Quote fact title overlay written: %s", out)
@@ -377,105 +347,57 @@ def _generate_minimal_dark_scene_card(
     template: object,
     aspect_ratio: str = "16:9",
 ) -> Path:
+    """
+    P0.6: Scene overlay is a small unobtrusive label only.
+    No repeated video title, no narration panel (subtitles carry speech).
+    Background fills most of the frame.
+    """
     from PIL import ImageDraw
 
-    del visual_description  # never drawn — internal generation metadata only
+    del visual_description, title, narration  # never drawn on scene cards (P0.6)
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    accent_col, title_col, body_col = _pick_palette(topic_seed or title)
+    accent_col, _title_col, _body_col = _pick_palette(topic_seed or f"scene-{scene_number}")
     img = _new_overlay_canvas(width, height)
     is_vertical = aspect_ratio == "9:16"
 
-    margin_x = int(width * 0.04)
-    margin_y = int(height * 0.04)
-
+    # P0.6.1: keep label fully inside frame after Ken Burns zoom (~1.05).
+    # Glass pad must also stay inside the safe rectangle.
+    glass_pad_x, glass_pad_y = 8, 6
     if is_vertical:
-        font_title_size, font_body_size, font_small_size = 48, 30, 22
-        text_wrap_width = 28
-        max_narr_lines = 5
+        safe_x = max(56, int(width * 0.06))
+        safe_y = max(64, int(height * 0.05))
+        font_small_size = 20
     else:
-        font_title_size, font_body_size, font_small_size = 56, 34, 24
-        text_wrap_width = 48
-        max_narr_lines = 4
-
-    font_title, font_body, font_small = _load_fonts(font_title_size, font_body_size, font_small_size)
-
-    # Accent bar
-    bar_w = 12 if not is_vertical else 16
-    bar = _new_overlay_canvas(width, height)
-    ImageDraw.Draw(bar).rectangle([0, 0, bar_w, height], fill=(*accent_col, 220))
-    img.alpha_composite(bar)
+        safe_x = max(56, int(width * 0.045))
+        safe_y = max(48, int(height * 0.045))
+        font_small_size = 18
+    _ft, _fb, font_small = _load_fonts(40, 28, font_small_size)
 
     draw = ImageDraw.Draw(img)
-
-    # Leave bottom ~22% clear for burned captions
-    caption_clear_y = int(height * 0.78)
-
-    pill_text = f"SCENE {scene_number:02d}"
-    title_text = (title[:64] + ("…" if len(title) > 64 else "")).strip() or " "
-    excerpt = narration.strip()
-    if len(excerpt) > 320:
-        excerpt = excerpt[:317] + "…"
-    narr_lines = textwrap.wrap(excerpt, width=text_wrap_width)[:max_narr_lines]
-    narration_text = "\n".join(narr_lines) if narr_lines else " "
-
-    pad = 28 if not is_vertical else 24
-    spacing = 10 if not is_vertical else 8
-
-    # Measure content
+    pill_text = f"{scene_number:02d}"
     pill_bbox = draw.textbbox((0, 0), pill_text, font=font_small)
-    pill_w = pill_bbox[2] - pill_bbox[0] + 28
-    pill_h = pill_bbox[3] - pill_bbox[1] + 14
-    tw, th = _text_block_size(draw, title_text, font_title, spacing=4)
-    nw, nh = _text_block_size(draw, narration_text, font_body, spacing=spacing)
+    pill_w = pill_bbox[2] - pill_bbox[0] + 20
+    pill_h = pill_bbox[3] - pill_bbox[1] + 10
 
-    content_w = max(pill_w, tw, nw)
-    panel_left = margin_x + bar_w + 8
-    panel_right = min(width - margin_x, panel_left + content_w + pad * 2)
-    # Prefer a readable panel width on wide frames
-    if not is_vertical:
-        panel_right = max(panel_right, int(width * 0.62))
-        panel_right = min(panel_right, width - margin_x)
-
-    panel_top = margin_y
-    inner_h = pad + pill_h + 16 + th + 18 + nh + pad
-    panel_bottom = min(panel_top + inner_h, caption_clear_y)
-    if panel_bottom - panel_top < inner_h:
-        # Shrink narration further if needed
-        while narr_lines and (panel_top + inner_h) > caption_clear_y:
-            narr_lines = narr_lines[:-1]
-            narration_text = "\n".join(narr_lines) if narr_lines else " "
-            nw, nh = _text_block_size(draw, narration_text, font_body, spacing=spacing)
-            inner_h = pad + pill_h + 16 + th + 18 + nh + pad
-        panel_bottom = min(panel_top + inner_h, caption_clear_y)
-
-    _draw_glass_panel(img, (panel_left, panel_top, panel_right, panel_bottom), radius=20)
-
+    x0 = safe_x + glass_pad_x
+    y0 = safe_y + glass_pad_y
+    glass_box = (
+        max(0, x0 - glass_pad_x),
+        max(0, y0 - glass_pad_y),
+        min(width, x0 + pill_w + glass_pad_x),
+        min(height, y0 + pill_h + glass_pad_y),
+    )
+    _draw_glass_panel(img, glass_box, radius=10)
     draw = ImageDraw.Draw(img)
-    x0 = panel_left + pad
-    y = panel_top + pad
-
-    # Scene pill
     draw.rounded_rectangle(
-        [x0, y, x0 + pill_w, y + pill_h],
-        radius=8,
-        fill=(*accent_col, 230),
+        [x0, y0, x0 + pill_w, y0 + pill_h],
+        radius=7,
+        fill=(*accent_col, 200),
     )
-    draw.text((x0 + 14, y + 4), pill_text, fill=(255, 255, 255, 255), font=font_small)
-    y += pill_h + 16
-
-    draw.text((x0, y), title_text, fill=(*title_col, 255), font=font_title)
-    y += th + 18
-
-    draw.multiline_text(
-        (x0, y),
-        narration_text,
-        fill=(*body_col, 255),
-        font=font_body,
-        spacing=spacing,
-    )
+    draw.text((x0 + 10, y0 + 3), pill_text, fill=(255, 255, 255, 255), font=font_small)
 
     img.save(str(out), "PNG", optimize=False)
     logger.debug("Minimal dark scene overlay written: %s", out)
@@ -494,82 +416,19 @@ def _generate_quote_fact_scene_card(
     template: object,
     aspect_ratio: str = "16:9",
 ) -> Path:
-    from PIL import ImageDraw
-
-    del visual_description
-    del title  # quote template emphasizes narration, not title chrome
-
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    accent_col, title_col, _body_col = _pick_palette(topic_seed or "quote")
-    img = _new_overlay_canvas(width, height)
-    is_vertical = aspect_ratio == "9:16"
-
-    margin_x = int(width * 0.05)
-    margin_y = int(height * 0.06)
-    caption_clear_y = int(height * 0.78)
-
-    if is_vertical:
-        font_body_size, font_small_size, font_quote_size = 40, 26, 84
-        text_wrap_width = 26
-        max_lines = 5
-        panel_w_ratio = 0.88
-    else:
-        font_body_size, font_small_size, font_quote_size = 44, 28, 100
-        text_wrap_width = 42
-        max_lines = 4
-        panel_w_ratio = 0.70
-
-    _ft, font_body, font_small = _load_fonts(56, font_body_size, font_small_size)
-    font_quote = _load_fonts(font_quote_size, 64, 32)[0]
-
-    bar_w = 24 if not is_vertical else 32
-    bar = _new_overlay_canvas(width, height)
-    ImageDraw.Draw(bar).rectangle([0, 0, bar_w, height], fill=(*accent_col, 230))
-    img.alpha_composite(bar)
-
-    draw = ImageDraw.Draw(img)
-    excerpt = narration.strip()
-    if len(excerpt) > 280:
-        excerpt = excerpt[:277] + "…"
-    quote_lines = textwrap.wrap(excerpt, width=text_wrap_width)[:max_lines]
-    quote_text = "\n".join(quote_lines) if quote_lines else " "
-
-    qw, qh = _text_block_size(draw, quote_text, font_body, spacing=16)
-    mark_h = font_quote_size
-
-    panel_w = max(int(width * panel_w_ratio), qw + 80)
-    panel_h = mark_h + 24 + qh + 64
-    panel_left = (width - panel_w) // 2
-    panel_top = max(margin_y + 20, int(height * 0.12))
-    panel_right = panel_left + panel_w
-    panel_bottom = min(panel_top + panel_h, caption_clear_y)
-
-    _draw_glass_panel(img, (panel_left, panel_top, panel_right, panel_bottom), radius=28)
-
-    draw = ImageDraw.Draw(img)
-    cx = width // 2
-    draw.text((cx, panel_top + 16), "\u201C", fill=(*accent_col, 230), font=font_quote, anchor="ma")
-    draw.multiline_text(
-        (cx, panel_top + mark_h + 8),
-        quote_text,
-        fill=(*title_col, 255),
-        font=font_body,
-        anchor="ma",
-        align="center",
-        spacing=16,
+    """
+    P0.6: Same minimal scene chrome as minimal_dark — no quote panel
+    duplicating narration (subtitles carry speech).
+    """
+    return _generate_minimal_dark_scene_card(
+        scene_number=scene_number,
+        title=title,
+        narration=narration,
+        visual_description=visual_description,
+        output_path=output_path,
+        width=width,
+        height=height,
+        topic_seed=topic_seed,
+        template=template,
+        aspect_ratio=aspect_ratio,
     )
-
-    # Subtle scene number — inside glass, not a prompt
-    draw.text(
-        (panel_right - 28, panel_bottom - 28),
-        f"{scene_number}",
-        fill=(*accent_col, 200),
-        font=font_small,
-        anchor="rb",
-    )
-
-    img.save(str(out), "PNG", optimize=False)
-    logger.debug("Quote fact scene overlay written: %s", out)
-    return out

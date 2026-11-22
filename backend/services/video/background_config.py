@@ -25,8 +25,9 @@ class BackgroundType(str, Enum):
     LOCAL_IMAGE_AUTO = "local_image_auto"  # Automatic local image selection (Phase 3F.1)
     LOCAL_VIDEO = "local_video"  # Local video clip
     LOCAL_VIDEO_AUTO = "local_video_auto"  # Automatic local video selection (Phase 3E.5)
-    PLACEHOLDER = "placeholder"  # Generated placeholder background
+    PLACEHOLDER = "placeholder"  # Generated placeholder background (avoid in production)
     VISUAL_PROVIDER = "visual_provider"  # Visual provider abstraction (Phase 3F.4)
+    PRODUCTION_AUTO = "production_auto"  # P0.5: local → free AI → gradient
 
 
 class BackgroundFit(str, Enum):
