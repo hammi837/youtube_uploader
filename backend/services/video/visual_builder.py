@@ -363,16 +363,16 @@ def _generate_minimal_dark_scene_card(
     img = _new_overlay_canvas(width, height)
     is_vertical = aspect_ratio == "9:16"
 
-    # P0.6.1: keep label fully inside frame after Ken Burns zoom (~1.05).
-    # Glass pad must also stay inside the safe rectangle.
+    # P0.6.1: keep label fully inside frame after Ken Burns zoom (~1.05 ≈ 2.4% edge crop).
+    # Source inset must exceed crop so the pill stays clearly inside the output frame.
     glass_pad_x, glass_pad_y = 8, 6
     if is_vertical:
-        safe_x = max(56, int(width * 0.06))
-        safe_y = max(64, int(height * 0.05))
+        safe_x = max(72, int(width * 0.07))
+        safe_y = max(80, int(height * 0.055))
         font_small_size = 20
     else:
-        safe_x = max(56, int(width * 0.045))
-        safe_y = max(48, int(height * 0.045))
+        safe_x = max(96, int(width * 0.06))
+        safe_y = max(64, int(height * 0.055))
         font_small_size = 18
     _ft, _fb, font_small = _load_fonts(40, 28, font_small_size)
 

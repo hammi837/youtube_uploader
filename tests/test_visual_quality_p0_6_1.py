@@ -35,9 +35,9 @@ def test_scene_label_safe_margins_16_9(tmp_path):
     )
     with Image.open(out) as img:
         left, top, right, bottom = _scene_label_bbox(img)
-        # Survive ~1.05 center zoom (~2.4% edge crop) with headroom
-        assert left >= 48
-        assert top >= 40
+        # Source inset must clear ~1.05 zoom crop (~46px on 1920) with headroom
+        assert left >= 90
+        assert top >= 56
         assert right < 1920 - 20
         assert bottom < 1080 - 20
 
@@ -57,8 +57,8 @@ def test_scene_label_safe_margins_9_16(tmp_path):
     )
     with Image.open(out) as img:
         left, top, right, bottom = _scene_label_bbox(img)
-        assert left >= 48
-        assert top >= 48
+        assert left >= 64
+        assert top >= 72
         assert right < 1080 - 20
         assert bottom < 1920 - 20
 
